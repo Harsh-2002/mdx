@@ -312,10 +312,7 @@ fn regenerate_completions() {
 
 /// Run `mdx --completions <shell>` and write the output to `dest`. Returns true on success.
 fn write_completion(binary: &std::path::Path, shell: &str, dest: &std::path::Path) -> bool {
-    match Command::new(binary)
-        .args(["--completions", shell])
-        .output()
-    {
+    match Command::new(binary).args(["--completions", shell]).output() {
         Ok(output) if output.status.success() && !output.stdout.is_empty() => {
             fs::write(dest, &output.stdout).is_ok()
         }
