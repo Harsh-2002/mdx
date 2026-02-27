@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
 use comrak::nodes::{AlertType, AstNode, ListType, NodeValue};
-use genpdfi::elements;
-use genpdfi::style;
 #[cfg(not(feature = "images"))]
 use genpdfi::Position;
 #[cfg(feature = "images")]
 use genpdfi::Scale;
+use genpdfi::elements;
+use genpdfi::style;
 use genpdfi::{Element, Mm};
 
 use crate::parse::parse_markdown;
@@ -206,7 +206,9 @@ fn render_rounded_bg_on_area(
     let px_w = (width_mm * dpi / 25.4).round().max(1.0) as u32;
     let px_h = (height_mm * dpi / 25.4).round().max(1.0) as u32;
     // Clamp radius so it never exceeds half the smaller dimension
-    let r = ((radius_mm * dpi / 25.4).round() as u32).min(px_w / 2).min(px_h / 2);
+    let r = ((radius_mm * dpi / 25.4).round() as u32)
+        .min(px_w / 2)
+        .min(px_h / 2);
 
     let (cr, cg, cb) = match color {
         style::Color::Rgb(r, g, b) => (r, g, b),
@@ -265,10 +267,7 @@ fn render_rounded_bg_on_area(
 
     // Save as PNG (lossless — avoids JPEG compression artifacts on solid colors).
     // Use PID in filename to avoid race conditions with concurrent exports.
-    let temp_path = std::env::temp_dir().join(format!(
-        "md-pdf-code-bg-{}.png",
-        std::process::id()
-    ));
+    let temp_path = std::env::temp_dir().join(format!("md-pdf-code-bg-{}.png", std::process::id()));
     if img.save(&temp_path).is_err() {
         return false;
     }
@@ -344,7 +343,13 @@ pub fn export_pdf(markdown: &str, output_path: &str) -> Result<(), Box<dyn std::
     let mut first_h1_seen = false;
 
     // Walk AST and push PDF elements
-    render_blocks(&mut doc, root, &mut temp_files, courier_ref, &mut first_h1_seen);
+    render_blocks(
+        &mut doc,
+        root,
+        &mut temp_files,
+        courier_ref,
+        &mut first_h1_seen,
+    );
 
     // Render footnote definitions at the end of the document
     render_footnotes(&mut doc, root, courier_ref);
@@ -390,7 +395,10 @@ fn render_block<'a>(
         }
         NodeValue::Heading(h) => {
             let level = h.level as usize;
-            let size = HEADING_SIZES.get(level.saturating_sub(1)).copied().unwrap_or(11);
+            let size = HEADING_SIZES
+                .get(level.saturating_sub(1))
+                .copied()
+                .unwrap_or(11);
             drop(data);
 
             // Page break before H1 (except the very first one)
@@ -447,7 +455,8 @@ fn render_block<'a>(
 
             // Mermaid diagrams: render as image via kroki.io
             if info == "mermaid"
-                && let Some((img_element, path)) = render_mermaid_to_image(&literal, temp_files.len())
+                && let Some((img_element, path)) =
+                    render_mermaid_to_image(&literal, temp_files.len())
             {
                 doc.push(elements::Break::new(0.5));
                 doc.push(img_element);
@@ -522,7 +531,10 @@ fn render_block<'a>(
                         .with_font_size(11)
                         .italic()
                         .with_color(style::Color::Rgb(80, 80, 95));
-                    p.push_styled("  \u{2503} ", style::Style::new().with_color(bar_color).bold());
+                    p.push_styled(
+                        "  \u{2503} ",
+                        style::Style::new().with_color(bar_color).bold(),
+                    );
                     collect_inline(&mut p, child, qs, mono_font);
                     doc.push(p);
                     doc.push(elements::Break::new(0.2));
@@ -549,7 +561,9 @@ fn render_block<'a>(
             doc.push(p);
             doc.push(elements::Break::new(0.5));
         }
-        NodeValue::FrontMatter(_) | NodeValue::HtmlBlock(_) | NodeValue::HtmlInline(_)
+        NodeValue::FrontMatter(_)
+        | NodeValue::HtmlBlock(_)
+        | NodeValue::HtmlInline(_)
         | NodeValue::FootnoteDefinition(_) => {
             drop(data);
         }
@@ -598,14 +612,17 @@ fn collect_inline<'a>(
             }
             NodeValue::Strikethrough => {
                 drop(data);
-                collect_inline(p, child, base.with_color(style::Color::Rgb(150, 150, 150)), mono_font);
+                collect_inline(
+                    p,
+                    child,
+                    base.with_color(style::Color::Rgb(150, 150, 150)),
+                    mono_font,
+                );
             }
             NodeValue::Link(link) => {
                 let url = link.url.clone();
                 drop(data);
-                let link_style = base
-                    .with_color(style::Color::Rgb(0, 95, 204))
-                    .underline();
+                let link_style = base.with_color(style::Color::Rgb(0, 95, 204)).underline();
                 let text = collect_text(child);
                 p.push_link(text, url, link_style);
             }
@@ -662,9 +679,7 @@ fn embed_inline_images<'a>(doc: &mut genpdfi::Document, node: &'a AstNode<'a>) {
             drop(data);
 
             // Skip remote URLs and data URIs — only embed local files
-            if url.starts_with("http://")
-                || url.starts_with("https://")
-                || url.starts_with("data:")
+            if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("data:")
             {
                 continue;
             }
@@ -782,7 +797,15 @@ fn render_list<'a>(
                         elements::Break::new(0.0),
                         genpdfi::Margins::trbl(0, 0, 0, 6),
                     ));
-                    render_list(doc, item_child, lt, st, temp_files, mono_font, first_h1_seen);
+                    render_list(
+                        doc,
+                        item_child,
+                        lt,
+                        st,
+                        temp_files,
+                        mono_font,
+                        first_h1_seen,
+                    );
                 }
                 _ => {
                     drop(cd);
@@ -837,15 +860,20 @@ fn render_table<'a>(
             let mut p = elements::Paragraph::default();
             collect_inline(&mut p, cell_node, cell_style, mono_font);
             if is_header {
-                row.push_element(FilledElement::new(
-                    elements::PaddedElement::new(p, genpdfi::Margins::trbl(1, 1, 1, 1)),
-                    style::Color::Rgb(240, 241, 245),
-                    1, 1,
-                ).with_corner_radius(0.0));
-            } else {
                 row.push_element(
-                    elements::PaddedElement::new(p, genpdfi::Margins::trbl(1, 1, 1, 1)),
+                    FilledElement::new(
+                        elements::PaddedElement::new(p, genpdfi::Margins::trbl(1, 1, 1, 1)),
+                        style::Color::Rgb(240, 241, 245),
+                        1,
+                        1,
+                    )
+                    .with_corner_radius(0.0),
                 );
+            } else {
+                row.push_element(elements::PaddedElement::new(
+                    p,
+                    genpdfi::Margins::trbl(1, 1, 1, 1),
+                ));
             }
         }
         let _ = row.push();
@@ -963,10 +991,7 @@ fn render_footnotes<'a>(
 
 /// Render a mermaid code block as a PNG image for PDF embedding.
 /// Returns the genpdfi Image element and the temp file path for cleanup.
-fn render_mermaid_to_image(
-    code: &str,
-    index: usize,
-) -> Option<(elements::Image, PathBuf)> {
+fn render_mermaid_to_image(code: &str, index: usize) -> Option<(elements::Image, PathBuf)> {
     let png_bytes = render_mermaid_png(code)?;
 
     let temp_dir = std::env::temp_dir().join("md-mermaid-export");
@@ -978,12 +1003,10 @@ fn render_mermaid_to_image(
         return None;
     }
 
-    elements::Image::from_path(&jpg_path)
-        .ok()
-        .map(|img| {
-            let img = scale_image_to_fit(img, &jpg_path);
-            (img.with_alignment(genpdfi::Alignment::Center), jpg_path)
-        })
+    elements::Image::from_path(&jpg_path).ok().map(|img| {
+        let img = scale_image_to_fit(img, &jpg_path);
+        (img.with_alignment(genpdfi::Alignment::Center), jpg_path)
+    })
 }
 
 /// Scale a genpdfi Image element to fit within page content margins.
@@ -1015,7 +1038,10 @@ fn scale_image_to_fit(img: elements::Image, _path: &std::path::Path) -> elements
 /// Convert PNG bytes (may have alpha) to JPEG file (no alpha).
 /// Composites transparent pixels onto a white background.
 #[cfg(feature = "images")]
-fn convert_png_to_jpeg(png_bytes: &[u8], output: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+fn convert_png_to_jpeg(
+    png_bytes: &[u8],
+    output: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     let img = image::load_from_memory(png_bytes)?;
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
@@ -1033,7 +1059,10 @@ fn convert_png_to_jpeg(png_bytes: &[u8], output: &std::path::Path) -> Result<(),
 }
 
 #[cfg(not(feature = "images"))]
-fn convert_png_to_jpeg(_png_bytes: &[u8], _output: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+fn convert_png_to_jpeg(
+    _png_bytes: &[u8],
+    _output: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     Err("Image conversion requires the 'images' feature".into())
 }
 
@@ -1101,11 +1130,7 @@ fn render_mermaid_kroki(code: &str) -> Option<Vec<u8>> {
 
     let body = resp.into_body().read_to_vec().ok()?;
 
-    if body.len() > 100 {
-        Some(body)
-    } else {
-        None
-    }
+    if body.len() > 100 { Some(body) } else { None }
 }
 
 // ─── Other export formats ────────────────────────────────────────────────────
