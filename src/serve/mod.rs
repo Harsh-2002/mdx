@@ -24,12 +24,6 @@ const SYNTAX_THEME: &str = "base16-ocean.dark";
 
 /// Print local network addresses the server is reachable at.
 fn print_network_addresses(port: u16) {
-    if let Ok(interfaces) = std::net::UdpSocket::bind("0.0.0.0:0") {
-        // Try to detect IPs by checking network interfaces
-        // Use a connect trick to find the primary local IP
-        let _ = interfaces; // drop the probe socket
-    }
-
     let mut addrs: Vec<IpAddr> = Vec::new();
 
     // Always include localhost
@@ -38,12 +32,12 @@ fn print_network_addresses(port: u16) {
     // Detect LAN IPs by probing a UDP socket (doesn't send traffic)
     if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
         // Connect to a public address to determine the default route IP
-        if sock.connect("8.8.8.8:80").is_ok() {
-            if let Ok(local_addr) = sock.local_addr() {
-                let ip = local_addr.ip();
-                if ip != IpAddr::V4(std::net::Ipv4Addr::LOCALHOST) {
-                    addrs.push(ip);
-                }
+        if sock.connect("8.8.8.8:80").is_ok()
+            && let Ok(local_addr) = sock.local_addr()
+        {
+            let ip = local_addr.ip();
+            if ip != IpAddr::V4(std::net::Ipv4Addr::LOCALHOST) {
+                addrs.push(ip);
             }
         }
     }
