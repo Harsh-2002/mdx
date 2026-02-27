@@ -40,6 +40,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     result?;
 
+    // Regenerate shell completions for the new binary (best-effort)
+    regenerate_completions();
+
     println!("  Updated mdx: v{} → v{}", CURRENT_VERSION, latest);
     Ok(())
 }
@@ -228,6 +231,96 @@ fn download_and_install(
     }
 
     Ok(())
+}
+
+/// Regenerate shell completions after a self-update.
+/// Best-effort — errors are silently ignored so they never block an update.
+fn regenerate_completions() {
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let exe_dir = match exe.parent() {
+        Some(d) => d,
+        None => return,
+    };
+    let new_binary = exe_dir.join(format!("mdx{}", std::env::consts::EXE_SUFFIX));
+    if !new_binary.exists() {
+        return;
+    }
+
+    #[cfg(unix)]
+    {
+        let home = match std::env::var("HOME") {
+            Ok(h) => PathBuf::from(h),
+            Err(_) => return,
+        };
+        let shell = std::env::var("SHELL").unwrap_or_default();
+        let shell_name = std::path::Path::new(&shell)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        let wrote = match shell_name.as_str() {
+            "bash" => {
+                let dir = home.join(".local/share/bash-completion/completions");
+                let _ = fs::create_dir_all(&dir);
+                let _ = fs::remove_file(dir.join("md")); // clean up old v4
+                write_completion(&new_binary, "bash", &dir.join("mdx"))
+            }
+            "zsh" => {
+                let dir = home.join(".local/share/zsh/site-functions");
+                let _ = fs::create_dir_all(&dir);
+                let _ = fs::remove_file(dir.join("_md")); // clean up old v4
+                write_completion(&new_binary, "zsh", &dir.join("_mdx"))
+            }
+            "fish" => {
+                let dir = home.join(".config/fish/completions");
+                let _ = fs::create_dir_all(&dir);
+                let _ = fs::remove_file(dir.join("md.fish")); // clean up old v4
+                write_completion(&new_binary, "fish", &dir.join("mdx.fish"))
+            }
+            _ => false,
+        };
+
+        if wrote {
+            eprintln!("  Shell completions updated.");
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            let local = PathBuf::from(&local_app_data);
+
+            // Clean up old v4 'md' completions
+            let old_dir = local.join("md");
+            if old_dir.exists() {
+                let _ = fs::remove_dir_all(&old_dir);
+            }
+
+            let comp_dir = local.join("mdx").join("completions");
+            let _ = fs::create_dir_all(&comp_dir);
+
+            if write_completion(&new_binary, "powershell", &comp_dir.join("mdx.ps1")) {
+                eprintln!("  Shell completions updated.");
+            }
+        }
+    }
+}
+
+/// Run `mdx --completions <shell>` and write the output to `dest`. Returns true on success.
+fn write_completion(binary: &std::path::Path, shell: &str, dest: &std::path::Path) -> bool {
+    match Command::new(binary)
+        .args(["--completions", shell])
+        .output()
+    {
+        Ok(output) if output.status.success() && !output.stdout.is_empty() => {
+            fs::write(dest, &output.stdout).is_ok()
+        }
+        _ => false,
+    }
 }
 
 /// Clean up leftover `mdx.old.exe` from a previous update.

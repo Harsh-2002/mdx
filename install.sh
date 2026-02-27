@@ -165,6 +165,7 @@ setup_completions() {
 setup_bash() {
     dir="${HOME}/.local/share/bash-completion/completions"
     mkdir -p "$dir"
+    rm -f "$dir/md"  # clean up old v4 completion
     "$1" --completions bash > "$dir/mdx"
 
     # shellcheck disable=SC2016
@@ -177,6 +178,7 @@ setup_bash() {
 setup_zsh() {
     dir="${HOME}/.local/share/zsh/site-functions"
     mkdir -p "$dir"
+    rm -f "$dir/_md"  # clean up old v4 completion
     "$1" --completions zsh > "$dir/_mdx"
 
     # shellcheck disable=SC2016
@@ -191,6 +193,7 @@ setup_zsh() {
 setup_fish() {
     dir="${HOME}/.config/fish/completions"
     mkdir -p "$dir"
+    rm -f "$dir/md.fish"  # clean up old v4 completion
     "$1" --completions fish > "$dir/mdx.fish"
 }
 

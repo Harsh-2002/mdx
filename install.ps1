@@ -168,6 +168,12 @@ public static extern IntPtr SendMessageTimeout(
 function Setup-Completions {
     param([string]$MdBin)
 
+    # Clean up old v4 'md' completions
+    $oldDir = Join-Path $env:LOCALAPPDATA "md"
+    if (Test-Path $oldDir) {
+        Remove-Item -Path $oldDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     $completionsDir = Join-Path $env:LOCALAPPDATA "mdx\completions"
     New-Item -ItemType Directory -Path $completionsDir -Force | Out-Null
 
