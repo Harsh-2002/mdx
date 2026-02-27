@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueHint};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -13,6 +13,7 @@ pub struct Args {
     pub command: Option<Command>,
 
     /// Markdown file to render (reads stdin if omitted)
+    #[arg(value_hint = ValueHint::FilePath)]
     pub file: Option<String>,
 
     /// Output width in columns (default: terminal width)
@@ -24,7 +25,7 @@ pub struct Args {
     pub pager: bool,
 
     /// Export to HTML or PDF file
-    #[arg(short, long)]
+    #[arg(short, long, value_hint = ValueHint::FilePath)]
     pub output: Option<String>,
 
     /// Color mode: auto, always, never
@@ -52,7 +53,7 @@ pub struct Args {
     pub completions: Option<clap_complete::Shell>,
 
     /// Custom CSS file to inject (serve and export modes)
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", value_hint = ValueHint::FilePath)]
     pub css: Option<String>,
 
     /// Generate man page and exit
@@ -104,6 +105,7 @@ pub enum Command {
 #[derive(clap::Args, Debug)]
 pub struct ServeArgs {
     /// Markdown file(s) or directory to preview (reads stdin if omitted or "-")
+    #[arg(value_hint = ValueHint::AnyPath)]
     pub files: Vec<String>,
 
     /// Port (default: random available port)
@@ -111,7 +113,7 @@ pub struct ServeArgs {
     pub port: Option<u16>,
 
     /// Custom CSS file to inject
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", value_hint = ValueHint::FilePath)]
     pub css: Option<String>,
 }
 
@@ -119,12 +121,14 @@ pub struct ServeArgs {
 #[derive(clap::Args, Debug)]
 pub struct WatchArgs {
     /// Markdown file to watch
+    #[arg(value_hint = ValueHint::FilePath)]
     pub file: String,
 }
 
 #[derive(clap::Args, Debug)]
 pub struct TocArgs {
     /// Markdown file to generate TOC from
+    #[arg(value_hint = ValueHint::FilePath)]
     pub file: String,
 
     /// Maximum heading depth to include (1-6)
@@ -136,12 +140,14 @@ pub struct TocArgs {
 #[derive(clap::Args, Debug)]
 pub struct PresentArgs {
     /// Markdown file to present
+    #[arg(value_hint = ValueHint::FilePath)]
     pub file: String,
 }
 
 #[derive(clap::Args, Debug)]
 pub struct StatsArgs {
     /// Markdown file (reads stdin if omitted)
+    #[arg(value_hint = ValueHint::FilePath)]
     pub file: Option<String>,
 }
 
@@ -151,6 +157,7 @@ pub struct StatsArgs {
 )]
 pub struct FmtArgs {
     /// Markdown file (reads stdin if omitted)
+    #[arg(value_hint = ValueHint::FilePath)]
     pub file: Option<String>,
 
     /// Format file in place (overwrites the file)
@@ -165,6 +172,7 @@ pub struct FmtArgs {
 #[derive(clap::Args, Debug)]
 pub struct LintArgs {
     /// Markdown file to lint
+    #[arg(value_hint = ValueHint::FilePath)]
     pub file: String,
 }
 
@@ -174,9 +182,11 @@ pub struct LintArgs {
 )]
 pub struct DiffArgs {
     /// First file (use "-" for stdin)
+    #[arg(value_hint = ValueHint::FilePath)]
     pub file_a: String,
 
     /// Second file
+    #[arg(value_hint = ValueHint::FilePath)]
     pub file_b: String,
 
     /// Show unified diff instead of side-by-side
@@ -190,6 +200,7 @@ pub struct DiffArgs {
 )]
 pub struct ExportArgs {
     /// Markdown file (reads stdin if omitted)
+    #[arg(value_hint = ValueHint::FilePath)]
     pub file: Option<String>,
 
     /// Output format
@@ -197,7 +208,7 @@ pub struct ExportArgs {
     pub to: String,
 
     /// Output file path (for pdf: defaults to input filename with .pdf extension)
-    #[arg(short, long)]
+    #[arg(short, long, value_hint = ValueHint::FilePath)]
     pub output: Option<String>,
 }
 
@@ -207,10 +218,11 @@ pub struct ExportArgs {
 )]
 pub struct PublishArgs {
     /// Directory containing markdown files
+    #[arg(value_hint = ValueHint::DirPath)]
     pub dir: String,
 
     /// Output directory for the generated site
-    #[arg(long, short, default_value = "dist")]
+    #[arg(long, short, default_value = "dist", value_hint = ValueHint::DirPath)]
     pub out: String,
 }
 
