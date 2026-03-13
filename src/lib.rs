@@ -1,6 +1,9 @@
 pub mod cli;
+pub mod completions;
 pub mod diff;
 pub mod export;
+#[cfg(feature = "url")]
+pub mod fetch;
 pub mod fmt;
 pub mod html;
 pub mod lint;

@@ -19,7 +19,7 @@ main() {
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT
 
-    url="https://github.com/Harsh-2002/MD/releases/download/${version}/mdx-${platform}.tar.gz"
+    url="https://github.com/Harsh-2002/MDX/releases/download/${version}/mdx-${platform}.tar.gz"
 
     if ! curl -fsSL --retry 3 --retry-delay 2 "$url" -o "${tmp}/mdx.tar.gz"; then
         echo "Error: failed to download from:" >&2
@@ -97,7 +97,7 @@ detect_platform() {
 
 get_latest_version() {
     curl -fsSL --retry 3 --retry-delay 1 \
-        https://api.github.com/repos/Harsh-2002/MD/releases/latest 2>/dev/null \
+        https://api.github.com/repos/Harsh-2002/MDX/releases/latest 2>/dev/null \
         | grep '"tag_name"' | head -1 | cut -d'"' -f4
 }
 
@@ -166,7 +166,7 @@ setup_bash() {
     dir="${HOME}/.local/share/bash-completion/completions"
     mkdir -p "$dir"
     rm -f "$dir/md"  # clean up old v4 completion
-    "$1" --completions bash > "$dir/mdx"
+    "$1" completions bash > "$dir/mdx"
 
     # shellcheck disable=SC2016
     line='[ -f "${HOME}/.local/share/bash-completion/completions/mdx" ] && . "${HOME}/.local/share/bash-completion/completions/mdx"'
@@ -179,7 +179,7 @@ setup_zsh() {
     dir="${HOME}/.local/share/zsh/site-functions"
     mkdir -p "$dir"
     rm -f "$dir/_md"  # clean up old v4 completion
-    "$1" --completions zsh > "$dir/_mdx"
+    "$1" completions zsh > "$dir/_mdx"
 
     # shellcheck disable=SC2016
     add_line "${HOME}/.zshrc" 'fpath=("'"$dir"'" $fpath)'
@@ -194,7 +194,7 @@ setup_fish() {
     dir="${HOME}/.config/fish/completions"
     mkdir -p "$dir"
     rm -f "$dir/md.fish"  # clean up old v4 completion
-    "$1" --completions fish > "$dir/mdx.fish"
+    "$1" completions fish > "$dir/mdx.fish"
 }
 
 reload_shell() {

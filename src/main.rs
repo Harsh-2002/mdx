@@ -118,11 +118,70 @@ fn main() {
     }
 
     #[cfg(feature = "url")]
+    if let Some(md::cli::Command::Fetch(ref fetch_args)) = args.command {
+        let markdown = md::fetch::run(fetch_args).unwrap_or_else(|e| {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        });
+        // If saved to file, we're done
+        if fetch_args.output.is_some() {
+            return;
+        }
+        // If stdout is not a terminal (piped), output raw markdown
+        if !std::io::stdout().is_terminal() {
+            let stdout = io::stdout();
+            let mut writer = stdout.lock();
+            let _ = writer.write_all(markdown.as_bytes());
+            if !markdown.ends_with('\n') {
+                let _ = writer.write_all(b"\n");
+            }
+            return;
+        }
+        // Render in terminal — same as md <file>
+        let mut term = TerminalInfo::detect(&args.color, args.width);
+        if args.plain {
+            term.color_level = md::terminal::ColorLevel::None;
+            term.unicode = false;
+        }
+        let theme = Theme::from_name(&args.theme);
+        let arena = typed_arena::Arena::new();
+        let root = parse_markdown(&arena, &markdown);
+        if args.pager {
+            render_with_pager(root, &term, &theme, &args.syntax_theme, args.plain, None);
+        } else {
+            let stdout = io::stdout();
+            let mut writer = io::BufWriter::new(stdout.lock());
+            let mut ctx = RenderContext::new(&term, &theme, args.syntax_theme.clone(), args.plain);
+            if let Err(e) = render::render(&mut writer, root, &mut ctx)
+                && e.kind() != io::ErrorKind::BrokenPipe
+            {
+                eprintln!("Error rendering: {}", e);
+                std::process::exit(1);
+            }
+            let _ = writer.flush();
+        }
+        return;
+    }
+
+    #[cfg(feature = "url")]
     if let Some(md::cli::Command::Update) = args.command {
         md::update::run().unwrap_or_else(|e| {
             eprintln!("Error: {}", e);
             std::process::exit(1);
         });
+        return;
+    }
+
+    if let Some(md::cli::Command::Completions(ref comp_args)) = args.command {
+        match comp_args.shell_or_action.as_str() {
+            "install" => {
+                md::completions::install().unwrap_or_else(|e| {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                });
+            }
+            shell => md::completions::generate(shell),
+        }
         return;
     }
 
@@ -154,13 +213,6 @@ fn main() {
             eprintln!("Error generating man page: {}", e);
             std::process::exit(1);
         });
-        return;
-    }
-
-    // Handle --completions
-    if let Some(shell) = args.completions {
-        let mut cmd = <Args as clap::CommandFactory>::command();
-        clap_complete::generate(shell, &mut cmd, "mdx", &mut io::stdout());
         return;
     }
 
@@ -223,13 +275,6 @@ fn main() {
         }
     };
 
-    // Handle --output (HTML or PDF export)
-    if let Some(ref output_path) = args.output {
-        let title = args.file.as_deref().unwrap_or("document");
-        export(&input, output_path, title, &args);
-        return;
-    }
-
     // Detect terminal capabilities
     let mut term = TerminalInfo::detect(&args.color, args.width);
     if args.plain {
@@ -277,43 +322,6 @@ fn main() {
         }
         let _ = writer.flush();
     }
-}
-
-fn export(markdown: &str, output_path: &str, title: &str, args: &Args) {
-    let custom_css = match args.css {
-        Some(ref path) => std::fs::read_to_string(path).unwrap_or_else(|e| {
-            eprintln!("Error reading CSS file '{}': {}", path, e);
-            std::process::exit(1);
-        }),
-        None => String::new(),
-    };
-    let html = md::html::render_standalone(
-        markdown,
-        &args.syntax_theme,
-        &args.theme,
-        title,
-        &custom_css,
-    );
-
-    if output_path.ends_with(".html") || output_path.ends_with(".htm") {
-        std::fs::write(output_path, &html).unwrap_or_else(|e| {
-            eprintln!("Error writing '{}': {}", output_path, e);
-            std::process::exit(1);
-        });
-        eprintln!("  Wrote {}", output_path);
-    } else if output_path.ends_with(".pdf") {
-        export_pdf(markdown, &html, output_path);
-    } else {
-        eprintln!("Unsupported output format. Use .html or .pdf");
-        std::process::exit(1);
-    }
-}
-
-fn export_pdf(markdown: &str, _html: &str, output_path: &str) {
-    md::export::export_pdf(markdown, output_path).unwrap_or_else(|e| {
-        eprintln!("Error generating PDF: {}", e);
-        std::process::exit(1);
-    });
 }
 
 fn render_with_pager<'a>(

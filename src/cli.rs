@@ -24,10 +24,6 @@ pub struct Args {
     #[arg(short, long)]
     pub pager: bool,
 
-    /// Export to HTML or PDF file
-    #[arg(short, long, value_hint = ValueHint::FilePath)]
-    pub output: Option<String>,
-
     /// Color mode: auto, always, never
     #[arg(long, default_value = "auto")]
     pub color: ColorMode,
@@ -48,15 +44,11 @@ pub struct Args {
     #[arg(long)]
     pub list_syntax_themes: bool,
 
-    /// Generate shell completions for the given shell and exit
-    #[arg(long, value_name = "SHELL")]
-    pub completions: Option<clap_complete::Shell>,
-
     /// Custom CSS file to inject (serve and export modes)
     #[arg(long, value_name = "FILE", value_hint = ValueHint::FilePath)]
     pub css: Option<String>,
 
-    /// Generate man page and exit
+    /// Generate man page
     #[arg(long)]
     pub generate_man: bool,
 }
@@ -96,9 +88,22 @@ pub enum Command {
     /// Generate a static site from a directory of markdown files
     Publish(PublishArgs),
 
+    /// Fetch a web page and extract its content as markdown
+    #[cfg(feature = "url")]
+    Fetch(FetchArgs),
+
     /// Update mdx to the latest version
     #[cfg(feature = "url")]
     Update,
+
+    /// Generate or install shell completions
+    Completions(CompletionsArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct CompletionsArgs {
+    /// Shell name (bash, zsh, fish, powershell) or "install" to auto-install
+    pub shell_or_action: String,
 }
 
 #[cfg(feature = "serve")]
@@ -224,6 +229,22 @@ pub struct PublishArgs {
     /// Output directory for the generated site
     #[arg(long, short, default_value = "dist", value_hint = ValueHint::DirPath)]
     pub out: String,
+}
+
+#[cfg(feature = "url")]
+#[derive(clap::Args, Debug)]
+pub struct FetchArgs {
+    /// URL to fetch
+    pub url: String,
+    /// Save output to a file instead of stdout
+    #[arg(short, long)]
+    pub output: Option<String>,
+    /// Convert full HTML to markdown (skip readability extraction)
+    #[arg(long)]
+    pub raw: bool,
+    /// Include YAML front matter with title, author, date, source URL
+    #[arg(long)]
+    pub metadata: bool,
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]

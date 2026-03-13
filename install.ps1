@@ -5,7 +5,7 @@
     Downloads the latest mdx release from GitHub, installs the binary,
     adds it to PATH, and sets up PowerShell tab completions.
 .EXAMPLE
-    irm https://raw.githubusercontent.com/Harsh-2002/MD/main/install.ps1 | iex
+    irm https://raw.githubusercontent.com/Harsh-2002/MDX/main/install.ps1 | iex
 #>
 
 #Requires -Version 5.1
@@ -32,7 +32,7 @@ function Main {
     try {
         # Download
         $target = "$arch-pc-windows-msvc"
-        $url = "https://github.com/Harsh-2002/MD/releases/download/$version/mdx-$target.tar.gz"
+        $url = "https://github.com/Harsh-2002/MDX/releases/download/$version/mdx-$target.tar.gz"
         $tarball = Join-Path $tempDir "mdx.tar.gz"
 
         Write-Host "  Downloading $version..."
@@ -105,7 +105,7 @@ function Get-LatestVersion {
     try {
         $prevProgressPref = $ProgressPreference
         $ProgressPreference = 'SilentlyContinue'
-        $response = Invoke-RestMethod -Uri "https://api.github.com/repos/Harsh-2002/MD/releases/latest" `
+        $response = Invoke-RestMethod -Uri "https://api.github.com/repos/Harsh-2002/MDX/releases/latest" `
             -Headers @{ 'User-Agent' = 'mdx-cli-installer' } `
             -UseBasicParsing
         $ProgressPreference = $prevProgressPref
@@ -166,7 +166,7 @@ public static extern IntPtr SendMessageTimeout(
 }
 
 function Setup-Completions {
-    param([string]$MdBin)
+    param([string]$MdxBin)
 
     # Clean up old v4 'md' completions
     $oldDir = Join-Path $env:LOCALAPPDATA "md"
@@ -174,11 +174,12 @@ function Setup-Completions {
         Remove-Item -Path $oldDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 
+
     $completionsDir = Join-Path $env:LOCALAPPDATA "mdx\completions"
     New-Item -ItemType Directory -Path $completionsDir -Force | Out-Null
 
     $completionFile = Join-Path $completionsDir "mdx.ps1"
-    & $MdBin --completions powershell 2>$null | Out-File -FilePath $completionFile -Encoding utf8
+    & $MdxBin completions powershell 2>$null | Out-File -FilePath $completionFile -Encoding utf8
 
     if (-not (Test-Path $completionFile) -or (Get-Item $completionFile).Length -eq 0) {
         return

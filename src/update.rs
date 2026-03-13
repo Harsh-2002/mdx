@@ -7,8 +7,8 @@ use std::process::Command;
 use std::os::unix::fs::PermissionsExt;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-const API_URL: &str = "https://api.github.com/repos/Harsh-2002/MD/releases/latest";
-const DOWNLOAD_BASE: &str = "https://github.com/Harsh-2002/MD/releases/download";
+const API_URL: &str = "https://api.github.com/repos/Harsh-2002/MDX/releases/latest";
+const DOWNLOAD_BASE: &str = "https://github.com/Harsh-2002/MDX/releases/download";
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Phase 1: Check if update is needed
@@ -310,9 +310,9 @@ fn regenerate_completions() {
     }
 }
 
-/// Run `mdx --completions <shell>` and write the output to `dest`. Returns true on success.
+/// Run `mdx completions <shell>` and write the output to `dest`. Returns true on success.
 fn write_completion(binary: &std::path::Path, shell: &str, dest: &std::path::Path) -> bool {
-    match Command::new(binary).args(["--completions", shell]).output() {
+    match Command::new(binary).args(["completions", shell]).output() {
         Ok(output) if output.status.success() && !output.stdout.is_empty() => {
             fs::write(dest, &output.stdout).is_ok()
         }

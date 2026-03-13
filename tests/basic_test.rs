@@ -984,7 +984,7 @@ fn test_generate_man() {
 #[test]
 fn test_completions_bash() {
     let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
-        .arg("--completions=bash")
+        .args(["completions", "bash"])
         .output()
         .expect("Failed to execute mdx");
     assert!(output.status.success());
@@ -998,21 +998,21 @@ fn test_completions_bash() {
 #[test]
 fn test_completions_zsh() {
     let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
-        .arg("--completions=zsh")
+        .args(["completions", "zsh"])
         .output()
         .expect("Failed to execute mdx");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("_md"),
-        "Zsh completions should reference _md"
+        stdout.contains("_mdx"),
+        "Zsh completions should reference _mdx"
     );
 }
 
 #[test]
 fn test_completions_fish() {
     let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
-        .arg("--completions=fish")
+        .args(["completions", "fish"])
         .output()
         .expect("Failed to execute mdx");
     assert!(output.status.success());
@@ -1137,20 +1137,17 @@ fn test_toc_slug_generation() {
 #[test]
 fn test_html_output() {
     let tmp = write_tmp("md-test-html.md", "# Hello\n\nWorld");
-    let out_path = std::env::temp_dir().join("md-test-output.html");
     let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
-        .args(["-o"])
-        .arg(&out_path)
+        .args(["export", "--to", "html"])
         .arg(&tmp)
         .output()
         .expect("Failed to execute mdx");
     assert!(output.status.success(), "HTML export should succeed");
-    let html = std::fs::read_to_string(&out_path).expect("HTML file should exist");
+    let html = String::from_utf8_lossy(&output.stdout);
     assert!(html.contains("<!DOCTYPE html>"), "Should be valid HTML");
     assert!(html.contains("Hello"), "HTML should contain heading");
     assert!(html.contains("World"), "HTML should contain content");
     let _ = std::fs::remove_file(&tmp);
-    let _ = std::fs::remove_file(&out_path);
 }
 
 #[test]
@@ -1159,22 +1156,19 @@ fn test_html_output_contains_structure() {
         "md-test-html-struct.md",
         "# Title\n\n```rust\nlet x = 1;\n```",
     );
-    let out_path = std::env::temp_dir().join("md-test-structure.html");
     let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
-        .args(["-o"])
-        .arg(&out_path)
+        .args(["export", "--to", "html"])
         .arg(&tmp)
         .output()
         .expect("Failed to execute mdx");
     assert!(output.status.success());
-    let html = std::fs::read_to_string(&out_path).expect("HTML file should exist");
+    let html = String::from_utf8_lossy(&output.stdout);
     assert!(html.contains("<article"), "Should have article element");
     assert!(
         html.contains("markdown-body"),
         "Should have markdown-body class"
     );
     let _ = std::fs::remove_file(&tmp);
-    let _ = std::fs::remove_file(&out_path);
 }
 
 // ── Edge cases ───────────────────────────────────────────────────────

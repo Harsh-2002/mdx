@@ -1,19 +1,19 @@
 # mdx
 
-A fast terminal markdown renderer and toolchain built in Rust. Renders markdown with syntax highlighting, tables, math, mermaid diagrams, and images — directly in your terminal. Also includes a browser preview with live reload, a markdown formatter, linter, diff viewer, format converter, and static site generator.
+A fast terminal markdown renderer and toolchain built in Rust. Renders markdown with syntax highlighting, tables, math, mermaid diagrams, and images — directly in your terminal. Also includes a browser preview with live reload, a markdown formatter, linter, diff viewer, format converter, web page fetcher, and static site generator.
 
 ## Install
 
 **macOS / Linux:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Harsh-2002/MD/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Harsh-2002/MDX/main/install.sh | sh
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/Harsh-2002/MD/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Harsh-2002/MDX/main/install.ps1 | iex
 ```
 
 Installs the binary and sets up shell completions automatically.
@@ -21,7 +21,7 @@ Installs the binary and sets up shell completions automatically.
 **From source (all platforms):**
 
 ```bash
-cargo install --git https://github.com/Harsh-2002/MD --features serve
+cargo install --git https://github.com/Harsh-2002/MDX --features serve
 ```
 
 ## Usage
@@ -32,6 +32,9 @@ mdx file.md --pager                  # render and pipe through less
 mdx serve file.md                    # browser preview with live reload
 mdx serve ./notes/                   # serve a directory as a note-taking app
 mdx serve a.md b.md                  # serve multiple files with index page
+mdx fetch https://example.com        # fetch web page as markdown
+mdx fetch --raw https://example.com  # full HTML to markdown (skip readability)
+mdx fetch -o article.md URL          # save fetched markdown to file
 mdx stats file.md                    # show word count, headings, reading time
 mdx fmt file.md                      # format/prettify markdown
 mdx fmt --check file.md              # check formatting (for CI)
@@ -56,13 +59,11 @@ mdx https://example.com/doc.md       # render from URL
 |------|-------------|
 | `-w, --width <N>` | Output width in columns |
 | `-p, --pager` | Pipe through `less` |
-| `-o, --output <FILE>` | Export to HTML or PDF |
 | `--plain` | Plain text, no colors or box-drawing |
 | `--theme dark\|light` | Color theme |
 | `--syntax-theme <NAME>` | Syntax highlighting theme |
 | `--list-syntax-themes` | List available syntax themes |
 | `--css <FILE>` | Custom CSS for HTML/serve output |
-| `--completions <SHELL>` | Generate shell completions |
 | `--generate-man` | Generate man page |
 
 ## Serve Mode
@@ -93,6 +94,19 @@ All modes include:
 | `Ctrl+H` | Search & replace in editor |
 
 ## CLI Tools
+
+### `mdx fetch` — Web page to markdown
+
+Fetches a web page, extracts the main article content using Mozilla Readability, and renders it as clean markdown in the terminal. When piped, outputs raw markdown (great for LLM pipelines).
+
+```bash
+mdx fetch https://example.com              # extract & render in terminal
+mdx fetch --raw https://example.com        # full HTML to markdown
+mdx fetch --metadata https://example.com   # include YAML front matter
+mdx fetch -o article.md https://example.com  # save to file
+mdx fetch https://example.com | llm        # pipe to LLM
+```
+
 
 ### `mdx stats` — Document statistics
 
@@ -182,6 +196,7 @@ draft: true
 - **Math** — inline `$...$` and display `$$...$$` blocks via KaTeX
 - **Images** — inline image rendering in supported terminals (iTerm2, kitty)
 - **URL fetching** — render markdown directly from URLs
+- **Web page extraction** — `mdx fetch` extracts article content as clean markdown
 - **Live reload** — `mdx serve` opens a browser preview that updates on file changes
 - **Built-in editor** — toggle a markdown editor in the browser, saves back to disk
 - **Search & replace** — find and replace text in the editor with regex support
@@ -215,7 +230,7 @@ markdown file
      |
      ├──> HTML renderer ──> axum server ──> browser (live reload via SSE)
      |
-     └──> CLI tools (stats, fmt, lint, diff, export, publish)
+     └──> CLI tools (stats, fmt, lint, diff, export, fetch, publish)
 ```
 
 ## Credits
@@ -237,6 +252,8 @@ Built on these libraries:
 | [image](https://github.com/image-rs/image) | Image decoding (PNG, JPEG, GIF, WebP) |
 | [genpdfi](https://docs.rs/genpdfi) | PDF generation |
 | [ureq](https://github.com/algesten/ureq) | HTTP client (URL fetching) |
+| [dom_smoothie](https://github.com/niklak/dom_smoothie) | Web article extraction (Readability) |
+| [htmd](https://github.com/nicot/htmd) | HTML to markdown conversion |
 
 ## License
 
