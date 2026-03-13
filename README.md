@@ -34,6 +34,7 @@ mdx serve ./notes/                   # serve a directory as a note-taking app
 mdx serve a.md b.md                  # serve multiple files with index page
 mdx fetch https://example.com        # fetch web page as markdown
 mdx fetch --raw https://example.com  # full HTML to markdown (skip readability)
+mdx fetch --tokens https://example.com  # show estimated token count
 mdx fetch -o article.md URL          # save fetched markdown to file
 mdx stats file.md                    # show word count, headings, reading time
 mdx fmt file.md                      # format/prettify markdown
@@ -86,6 +87,7 @@ All modes include:
 - Print / PDF export button (uses browser's native print)
 - Dark/light theme toggle
 - Table of contents sidebar
+- **Markdown for Agents** — AI agents sending `Accept: text/markdown` get raw markdown with `X-Markdown-Tokens` and `Vary: Accept` headers instead of HTML
 
 | Key | Action |
 |-----|--------|
@@ -102,10 +104,13 @@ All modes include:
 
 Fetches a web page, extracts the main article content using Mozilla Readability, and renders it as clean markdown in the terminal. When piped, outputs raw markdown (great for LLM pipelines).
 
+Supports the [Markdown for Agents (MFA)](https://developers.cloudflare.com/fundamentals/reference/markdown-for-agents/) protocol: sends `Accept: text/markdown` so MFA-enabled sites (e.g. behind Cloudflare) return pre-converted markdown directly, skipping local HTML conversion. Also reads `X-Markdown-Tokens` and `Content-Signal` response headers.
+
 ```bash
 mdx fetch https://example.com              # extract & render in terminal
-mdx fetch --raw https://example.com        # full HTML to markdown
-mdx fetch --metadata https://example.com   # include YAML front matter
+mdx fetch --raw https://example.com        # full HTML to markdown (sanitizes scripts)
+mdx fetch --metadata https://example.com   # include YAML front matter (og:image, site_name, etc.)
+mdx fetch --tokens https://example.com     # show estimated token count
 mdx fetch -o article.md https://example.com  # save to file
 mdx fetch https://example.com | llm        # pipe to LLM
 ```
@@ -219,7 +224,8 @@ draft: true
 - **Math** — inline `$...$` and display `$$...$$` via KaTeX in browser preview (`mdx serve`)
 - **Images** — inline image rendering in supported terminals (iTerm2, kitty)
 - **URL fetching** — render markdown directly from URLs
-- **Web page extraction** — `mdx fetch` extracts article content as clean markdown
+- **Web page extraction** — `mdx fetch` extracts article content as clean markdown, with MFA content negotiation
+- **Markdown for Agents** — `mdx serve` responds with raw markdown when agents send `Accept: text/markdown`
 - **Live reload** — `mdx serve` opens a browser preview that updates on file changes
 - **Built-in editor** — toggle a markdown editor in the browser, saves back to disk
 - **Search & replace** — find and replace text in the editor with regex support
