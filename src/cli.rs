@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand, ValueHint};
     version,
     about = "Render markdown beautifully in the terminal",
     subcommand_help_heading = "Commands",
-    after_help = "Examples:\n  mdx README.md                          Render in terminal\n  mdx serve .                            Live preview in browser\n  mdx stats README.md                    Show word count & stats\n  mdx fmt --check README.md              Check formatting\n  mdx export --to html README.md         Export to HTML\n  mdx export --to pdf README.md          Export to PDF\n  mdx publish ./blog --out ./dist        Generate static site"
+    after_help = "Examples:\n  mdx README.md                          Render in terminal\n  mdx serve .                            Live preview in browser\n  mdx fetch https://example.com          Fetch web page as markdown\n  mdx stats README.md                    Show word count & stats\n  mdx fmt --check README.md              Check formatting\n  mdx export --to html README.md         Export to HTML\n  mdx export --to pdf README.md          Export to PDF\n  mdx publish ./blog --out ./dist        Generate static site\n  mdx update                             Update to latest version\n  mdx completions install                Install shell completions"
 )]
 pub struct Args {
     #[command(subcommand)]

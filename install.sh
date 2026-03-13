@@ -19,7 +19,7 @@ main() {
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT
 
-    url="https://github.com/Harsh-2002/MDX/releases/download/${version}/mdx-${platform}.tar.gz"
+    url="https://github.com/Harsh-2002/mdx/releases/download/${version}/mdx-${platform}.tar.gz"
 
     if ! curl -fsSL --retry 3 --retry-delay 2 "$url" -o "${tmp}/mdx.tar.gz"; then
         echo "Error: failed to download from:" >&2
@@ -96,7 +96,7 @@ detect_platform() {
 
 get_latest_version() {
     curl -fsSL --retry 3 --retry-delay 1 \
-        https://api.github.com/repos/Harsh-2002/MDX/releases/latest 2>/dev/null \
+        https://api.github.com/repos/Harsh-2002/mdx/releases/latest 2>/dev/null \
         | grep '"tag_name"' | head -1 | cut -d'"' -f4
 }
 

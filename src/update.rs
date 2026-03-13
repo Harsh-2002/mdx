@@ -8,8 +8,8 @@ use std::time::Duration;
 use std::os::unix::fs::PermissionsExt;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-const API_URL: &str = "https://api.github.com/repos/Harsh-2002/MDX/releases/latest";
-const DOWNLOAD_BASE: &str = "https://github.com/Harsh-2002/MDX/releases/download";
+const API_URL: &str = "https://api.github.com/repos/Harsh-2002/mdx/releases/latest";
+const DOWNLOAD_BASE: &str = "https://github.com/Harsh-2002/mdx/releases/download";
 
 fn http_agent() -> ureq::Agent {
     let config = ureq::Agent::config_builder()

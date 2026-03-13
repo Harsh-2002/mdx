@@ -1,19 +1,19 @@
 # mdx
 
-A fast terminal markdown renderer and toolchain built in Rust. Renders markdown with syntax highlighting, tables, math, mermaid diagrams, and images — directly in your terminal. Also includes a browser preview with live reload, a markdown formatter, linter, diff viewer, format converter, web page fetcher, and static site generator.
+A fast terminal markdown renderer and toolchain built in Rust. Renders markdown with syntax highlighting, tables, and images — directly in your terminal. In browser preview mode (`mdx serve`), also supports math (KaTeX) and mermaid diagrams. Includes a markdown formatter, linter, diff viewer, format converter, web page fetcher, and static site generator.
 
 ## Install
 
 **macOS / Linux:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Harsh-2002/MDX/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Harsh-2002/mdx/main/install.sh | sh
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/Harsh-2002/MDX/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Harsh-2002/mdx/main/install.ps1 | iex
 ```
 
 Installs the binary and sets up shell completions automatically.
@@ -21,7 +21,7 @@ Installs the binary and sets up shell completions automatically.
 **From source (all platforms):**
 
 ```bash
-cargo install --git https://github.com/Harsh-2002/MDX --features serve
+cargo install --git https://github.com/Harsh-2002/mdx --features serve
 ```
 
 ## Usage
@@ -49,6 +49,8 @@ mdx toc file.md                      # print table of contents
 mdx present file.md                  # slide presentation in terminal
 mdx watch file.md                    # re-render on file changes
 mdx publish ./blog --out ./dist      # generate a static site
+mdx update                           # self-update to latest version
+mdx completions install              # install shell completions
 cat README.md | mdx                  # read from stdin
 mdx https://example.com/doc.md       # render from URL
 ```
@@ -58,7 +60,8 @@ mdx https://example.com/doc.md       # render from URL
 | Flag | Description |
 |------|-------------|
 | `-w, --width <N>` | Output width in columns |
-| `-p, --pager` | Pipe through `less` |
+| `-p, --pager` | Pipe through `less` (or `more` on Windows) |
+| `--color auto\|always\|never` | Color output mode |
 | `--plain` | Plain text, no colors or box-drawing |
 | `--theme dark\|light` | Color theme |
 | `--syntax-theme <NAME>` | Syntax highlighting theme |
@@ -163,6 +166,26 @@ mdx export --to json README.md   # AST as JSON (for tooling)
 mdx export --to txt README.md    # plain text (strip formatting)
 ```
 
+### `mdx update` — Self-update
+
+Updates mdx to the latest release from GitHub.
+
+```bash
+mdx update
+```
+
+### `mdx completions` — Shell completions
+
+Generate or install shell completions for tab completion.
+
+```bash
+mdx completions install              # auto-detect shell and install
+mdx completions bash                 # print bash completions to stdout
+mdx completions zsh                  # print zsh completions to stdout
+mdx completions fish                 # print fish completions to stdout
+mdx completions powershell           # print PowerShell completions to stdout
+```
+
 ### `mdx publish` — Static site generator
 
 Generates a static site from a directory of markdown files. Supports YAML front matter for metadata.
@@ -192,8 +215,8 @@ draft: true
 
 - **Syntax highlighting** — language-aware code blocks via syntect
 - **Tables** — full GFM table rendering with alignment and cell wrapping
-- **Mermaid diagrams** — rendered as interactive SVG in browser via mermaid.js
-- **Math** — inline `$...$` and display `$$...$$` blocks via KaTeX
+- **Mermaid diagrams** — rendered as interactive SVG in browser preview (`mdx serve`) via mermaid.js
+- **Math** — inline `$...$` and display `$$...$$` via KaTeX in browser preview (`mdx serve`)
 - **Images** — inline image rendering in supported terminals (iTerm2, kitty)
 - **URL fetching** — render markdown directly from URLs
 - **Web page extraction** — `mdx fetch` extracts article content as clean markdown

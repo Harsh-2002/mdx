@@ -5,7 +5,7 @@
     Downloads the latest mdx release from GitHub, installs the binary,
     adds it to PATH, and sets up PowerShell tab completions.
 .EXAMPLE
-    irm https://raw.githubusercontent.com/Harsh-2002/MDX/main/install.ps1 | iex
+    irm https://raw.githubusercontent.com/Harsh-2002/mdx/main/install.ps1 | iex
 #>
 
 #Requires -Version 5.1
@@ -32,7 +32,7 @@ function Main {
     try {
         # Download
         $target = "$arch-pc-windows-msvc"
-        $url = "https://github.com/Harsh-2002/MDX/releases/download/$version/mdx-$target.tar.gz"
+        $url = "https://github.com/Harsh-2002/mdx/releases/download/$version/mdx-$target.tar.gz"
         $tarball = Join-Path $tempDir "mdx.tar.gz"
 
         Write-Host "  Downloading $version..."
@@ -105,7 +105,7 @@ function Get-LatestVersion {
     try {
         $prevProgressPref = $ProgressPreference
         $ProgressPreference = 'SilentlyContinue'
-        $response = Invoke-RestMethod -Uri "https://api.github.com/repos/Harsh-2002/MDX/releases/latest" `
+        $response = Invoke-RestMethod -Uri "https://api.github.com/repos/Harsh-2002/mdx/releases/latest" `
             -Headers @{ 'User-Agent' = 'mdx-cli-installer' } `
             -UseBasicParsing
         $ProgressPreference = $prevProgressPref

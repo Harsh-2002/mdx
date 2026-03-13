@@ -51,7 +51,7 @@ fn fetch_html(url: &str) -> Result<String, Box<dyn std::error::Error>> {
     let agent = http_agent();
     let resp = agent
         .get(url)
-        .header("User-Agent", "mdx-cli (https://github.com/Harsh-2002/MDX)")
+        .header("User-Agent", "mdx-cli (https://github.com/Harsh-2002/mdx)")
         .call()?;
 
     let status = resp.status().as_u16();

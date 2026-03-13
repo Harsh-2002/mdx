@@ -1,12 +1,12 @@
 [package]
 name = "mdx"
-version = "5.2.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A terminal markdown renderer with colors, formatting, and diagram support"
 license = "MIT"
-repository = "https://github.com/Harsh-2002/MDX"
-homepage = "https://github.com/Harsh-2002/MDX"
+repository = "https://github.com/Harsh-2002/mdx"
+homepage = "https://github.com/Harsh-2002/mdx"
 keywords = ["markdown", "terminal", "cli", "renderer"]
 categories = ["command-line-utilities", "text-processing"]
 
