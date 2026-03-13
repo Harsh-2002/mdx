@@ -484,7 +484,8 @@ mdx https://example.com/doc.md         <span style="color:var(--fg-muted)"># ren
     <li><strong>Math</strong> &mdash; inline <code>$...$</code> and display <code>$$...$$</code> via KaTeX in browser preview (<code>mdx serve</code>)</li>
     <li><strong>Images</strong> &mdash; inline image rendering in supported terminals (iTerm2, kitty)</li>
     <li><strong>URL fetching</strong> &mdash; render markdown directly from URLs</li>
-    <li><strong>Web page extraction</strong> &mdash; <code>mdx fetch</code> extracts article content as clean markdown</li>
+    <li><strong>Web page extraction</strong> &mdash; <code>mdx fetch</code> extracts article content as clean markdown, with MFA content negotiation</li>
+    <li><strong>Markdown for Agents</strong> &mdash; <code>mdx serve</code> responds with raw markdown when AI agents send <code>Accept: text/markdown</code></li>
     <li><strong>Live reload</strong> &mdash; <code>mdx serve</code> opens a browser preview that updates on save</li>
     <li><strong>Built-in editor</strong> &mdash; edit markdown in the browser, saves back to disk</li>
     <li><strong>Search &amp; replace</strong> &mdash; find and replace text in the editor with regex support</li>
@@ -504,10 +505,11 @@ mdx https://example.com/doc.md         <span style="color:var(--fg-muted)"># ren
 
 <div class="tool-card">
     <h3><code>mdx fetch</code> &mdash; Web page to markdown</h3>
-    <p>Fetches a web page, extracts the main article content using Mozilla Readability, and outputs clean markdown. Great for LLM pipelines and saving articles.</p>
+    <p>Fetches a web page, extracts the main article content using Mozilla Readability, and outputs clean markdown. Supports the <a href="https://developers.cloudflare.com/fundamentals/reference/markdown-for-agents/">Markdown for Agents</a> protocol &mdash; MFA-enabled sites return pre-converted markdown directly. Great for LLM pipelines.</p>
 <pre><span class="code-lang">bash</span><code>mdx fetch https://example.com              <span style="color:var(--fg-muted)"># extract article as markdown</span>
-mdx fetch --raw https://example.com        <span style="color:var(--fg-muted)"># full HTML to markdown</span>
+mdx fetch --raw https://example.com        <span style="color:var(--fg-muted)"># full HTML to markdown (sanitizes scripts)</span>
 mdx fetch --metadata https://example.com   <span style="color:var(--fg-muted)"># include YAML front matter</span>
+mdx fetch --tokens https://example.com     <span style="color:var(--fg-muted)"># show estimated token count</span>
 mdx fetch -o article.md https://example.com  <span style="color:var(--fg-muted)"># save to file</span>
 mdx fetch https://example.com | llm        <span style="color:var(--fg-muted)"># pipe to LLM</span></code><button class="copy-btn" aria-label="Copy">Copy</button></pre>
 </div>
@@ -599,7 +601,7 @@ mdx completions powershell           <span style="color:var(--fg-muted)"># print
 
 <p><strong>Multiple files</strong> &mdash; <code>mdx serve a.md b.md c.md</code> serves the listed files with sidebar navigation and search.</p>
 
-<p>All modes include a built-in editor, image upload (drag and drop or paste), print/PDF export, dark/light theme, and a table of contents sidebar.</p>
+<p>All modes include a built-in editor, image upload (drag and drop or paste), print/PDF export, dark/light theme, and a table of contents sidebar. AI agents sending <code>Accept: text/markdown</code> get raw markdown with <code>X-Markdown-Tokens</code> and <code>Vary: Accept</code> headers instead of HTML (<a href="https://developers.cloudflare.com/fundamentals/reference/markdown-for-agents/">Markdown for Agents</a> protocol).</p>
 
 <table class="key-table">
     <thead>
