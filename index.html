@@ -4,17 +4,17 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>mdx — Markdown toolchain for the terminal</title>
-<meta name="description" content="A fast, single-binary markdown toolchain built in Rust. Render in the terminal, preview in the browser, format, lint, diff, export to HTML/PDF, and publish static sites.">
+<meta name="description" content="A fast, single-binary markdown toolchain built in Rust. Render in the terminal, preview in the browser, fetch web pages as markdown, format, lint, diff, export to HTML/PDF, and publish static sites.">
 <meta name="theme-color" content="#1e1e1e" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#faf8f5" media="(prefers-color-scheme: light)">
-<link rel="canonical" href="https://harsh-2002.github.io/MD/">
+<link rel="canonical" href="https://harsh-2002.github.io/mdx/">
 <meta property="og:type" content="website">
 <meta property="og:title" content="mdx — Markdown toolchain for the terminal">
-<meta property="og:description" content="A fast, single-binary markdown toolchain built in Rust. Render in the terminal, preview in the browser, format, lint, diff, export to HTML/PDF, and publish static sites.">
-<meta property="og:url" content="https://harsh-2002.github.io/MD/">
+<meta property="og:description" content="A fast, single-binary markdown toolchain built in Rust. Render in the terminal, preview in the browser, fetch web pages as markdown, format, lint, diff, export to HTML/PDF, and publish static sites.">
+<meta property="og:url" content="https://harsh-2002.github.io/mdx/">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="mdx — Markdown toolchain for the terminal">
-<meta name="twitter:description" content="A fast, single-binary markdown toolchain built in Rust. Render in the terminal, preview in the browser, format, lint, diff, export to HTML/PDF, and publish static sites.">
+<meta name="twitter:description" content="A fast, single-binary markdown toolchain built in Rust. Render in the terminal, preview in the browser, fetch web pages as markdown, format, lint, diff, export to HTML/PDF, and publish static sites.">
 <meta name="keywords" content="markdown, terminal, cli, rust, renderer, formatter, linter, live preview, static site generator, mdx">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>M</text></svg>">
 <script type="application/ld+json">
@@ -25,8 +25,8 @@
   "description": "A fast, single-binary markdown toolchain built in Rust.",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "macOS, Linux, Windows",
-  "url": "https://harsh-2002.github.io/MD/",
-  "codeRepository": "https://github.com/Harsh-2002/MD",
+  "url": "https://harsh-2002.github.io/mdx/",
+  "codeRepository": "https://github.com/Harsh-2002/mdx",
   "programmingLanguage": "Rust",
   "license": "https://opensource.org/licenses/MIT",
   "offers": { "@type": "Offer", "price": "0" }
@@ -410,7 +410,7 @@ body, .article, pre, .tool-card, th, tr, .install-tab, code {
 
 <!-- ===== Header ===== -->
 <h1><code style="background:none;padding:0;font-size:1em;">mdx</code></h1>
-<p class="tagline">A fast, single-binary markdown toolchain built in Rust. Render in the terminal with syntax highlighting, preview in the browser with live reload, format, lint, diff, export, and publish &mdash; all from one command.</p>
+<p class="tagline">A fast, single-binary markdown toolchain built in Rust. Render in the terminal with syntax highlighting, preview in the browser with live reload, fetch web pages as markdown, format, lint, diff, export, and publish &mdash; all from one command.</p>
 <p class="byline">By Anurag Vishwakarma &middot; <span id="live-time"></span></p>
 
 <!-- ===== Install ===== -->
@@ -423,22 +423,22 @@ body, .article, pre, .tool-card, th, tr, .install-tab, code {
 </div>
 
 <div class="install-panel active" id="panel-macos-linux">
-<pre><span class="code-lang">bash</span><code>curl -fsSL https://raw.githubusercontent.com/Harsh-2002/MD/main/install.sh | sh</code><button class="copy-btn" aria-label="Copy">Copy</button></pre>
+<pre><span class="code-lang">bash</span><code>curl -fsSL https://raw.githubusercontent.com/Harsh-2002/mdx/main/install.sh | sh</code><button class="copy-btn" aria-label="Copy">Copy</button></pre>
 </div>
 
 <div class="install-panel" id="panel-windows">
-<pre><span class="code-lang">powershell</span><code>irm https://raw.githubusercontent.com/Harsh-2002/MD/main/install.ps1 | iex</code><button class="copy-btn" aria-label="Copy">Copy</button></pre>
+<pre><span class="code-lang">powershell</span><code>irm https://raw.githubusercontent.com/Harsh-2002/mdx/main/install.ps1 | iex</code><button class="copy-btn" aria-label="Copy">Copy</button></pre>
 </div>
 
 <div class="install-panel" id="panel-cargo">
-<pre><span class="code-lang">bash</span><code>cargo install --git https://github.com/Harsh-2002/MD --features serve</code><button class="copy-btn" aria-label="Copy">Copy</button></pre>
+<pre><span class="code-lang">bash</span><code>cargo install --git https://github.com/Harsh-2002/mdx --features serve</code><button class="copy-btn" aria-label="Copy">Copy</button></pre>
 </div>
 
 <p>Installs the binary and sets up shell completions automatically. Works on macOS, Linux (glibc and musl), and Windows. Supports x86_64 and ARM64.</p>
 
 <h3>Pre-built binaries</h3>
 
-<p>Each <a href="https://github.com/Harsh-2002/MD/releases">release</a> includes pre-built binaries for every supported platform. Download the one that matches your system:</p>
+<p>Each <a href="https://github.com/Harsh-2002/mdx/releases">release</a> includes pre-built binaries for every supported platform. Download the one that matches your system:</p>
 
 <table>
     <thead>
@@ -469,6 +469,8 @@ sudo mv mdx /usr/local/bin/</code><button class="copy-btn" aria-label="Copy">Cop
 mdx README.md --pager                  <span style="color:var(--fg-muted)"># pipe through less</span>
 mdx serve file.md                      <span style="color:var(--fg-muted)"># live preview in browser</span>
 mdx serve ./notes/                     <span style="color:var(--fg-muted)"># serve a directory of notes</span>
+mdx fetch https://example.com          <span style="color:var(--fg-muted)"># fetch web page as markdown</span>
+mdx update                             <span style="color:var(--fg-muted)"># self-update to latest version</span>
 cat README.md | mdx                    <span style="color:var(--fg-muted)"># read from stdin</span>
 mdx https://example.com/doc.md         <span style="color:var(--fg-muted)"># render from URL</span></code><button class="copy-btn" aria-label="Copy">Copy</button></pre>
 
@@ -478,21 +480,44 @@ mdx https://example.com/doc.md         <span style="color:var(--fg-muted)"># ren
 <ul class="features">
     <li><strong>Syntax highlighting</strong> &mdash; language-aware code blocks via syntect</li>
     <li><strong>Tables</strong> &mdash; full GFM table rendering with alignment and cell wrapping</li>
-    <li><strong>Mermaid diagrams</strong> &mdash; rendered as interactive SVG in the browser via mermaid.js</li>
-    <li><strong>Math</strong> &mdash; inline <code>$...$</code> and display <code>$$...$$</code> blocks via KaTeX</li>
+    <li><strong>Mermaid diagrams</strong> &mdash; rendered as interactive SVG in browser preview (<code>mdx serve</code>) via mermaid.js</li>
+    <li><strong>Math</strong> &mdash; inline <code>$...$</code> and display <code>$$...$$</code> via KaTeX in browser preview (<code>mdx serve</code>)</li>
     <li><strong>Images</strong> &mdash; inline image rendering in supported terminals (iTerm2, kitty)</li>
+    <li><strong>URL fetching</strong> &mdash; render markdown directly from URLs</li>
+    <li><strong>Web page extraction</strong> &mdash; <code>mdx fetch</code> extracts article content as clean markdown</li>
     <li><strong>Live reload</strong> &mdash; <code>mdx serve</code> opens a browser preview that updates on save</li>
     <li><strong>Built-in editor</strong> &mdash; edit markdown in the browser, saves back to disk</li>
+    <li><strong>Search &amp; replace</strong> &mdash; find and replace text in the editor with regex support</li>
     <li><strong>Image upload</strong> &mdash; drag and drop or paste images into the editor</li>
     <li><strong>Print / PDF</strong> &mdash; native PDF export, plus browser print with clean CSS</li>
     <li><strong>Dark/light theme</strong> &mdash; toggle with button or <kbd>t</kbd>, persisted across sessions</li>
     <li><strong>Slide presentation</strong> &mdash; <code>mdx present</code> turns <code>---</code> separators into terminal slides</li>
+    <li><strong>ToC generation</strong> &mdash; <code>mdx toc</code> extracts headings with depth control</li>
+    <li><strong>Self-update</strong> &mdash; <code>mdx update</code> updates to the latest release</li>
+    <li><strong>Shell completions</strong> &mdash; <code>mdx completions install</code> for bash, zsh, fish, PowerShell</li>
     <li><strong>Alerts</strong> &mdash; GitHub-style note, tip, warning, and caution blocks</li>
     <li><strong>Full GFM</strong> &mdash; footnotes, task lists, strikethrough, autolinks</li>
 </ul>
 
 <!-- ===== CLI Tools ===== -->
 <h2 id="cli-tools">CLI Tools <a href="#cli-tools" class="anchor" aria-hidden="true">#</a></h2>
+
+<div class="tool-card">
+    <h3><code>mdx fetch</code> &mdash; Web page to markdown</h3>
+    <p>Fetches a web page, extracts the main article content using Mozilla Readability, and outputs clean markdown. Great for LLM pipelines and saving articles.</p>
+<pre><span class="code-lang">bash</span><code>mdx fetch https://example.com              <span style="color:var(--fg-muted)"># extract article as markdown</span>
+mdx fetch --raw https://example.com        <span style="color:var(--fg-muted)"># full HTML to markdown</span>
+mdx fetch --metadata https://example.com   <span style="color:var(--fg-muted)"># include YAML front matter</span>
+mdx fetch -o article.md https://example.com  <span style="color:var(--fg-muted)"># save to file</span>
+mdx fetch https://example.com | llm        <span style="color:var(--fg-muted)"># pipe to LLM</span></code><button class="copy-btn" aria-label="Copy">Copy</button></pre>
+</div>
+
+<div class="tool-card">
+    <h3><code>mdx toc</code> &mdash; Table of contents</h3>
+    <p>Extracts headings from a markdown file and prints a table of contents with configurable depth.</p>
+<pre><span class="code-lang">bash</span><code>mdx toc README.md              <span style="color:var(--fg-muted)"># print table of contents</span>
+mdx toc --depth 2 README.md    <span style="color:var(--fg-muted)"># limit to h1 and h2</span></code><button class="copy-btn" aria-label="Copy">Copy</button></pre>
+</div>
 
 <div class="tool-card">
     <h3><code>mdx stats</code> &mdash; Document statistics</h3>
@@ -547,6 +572,22 @@ mdx export --to txt README.md    <span style="color:var(--fg-muted)"># plain tex
 <pre><span class="code-lang">bash</span><code>mdx publish ./blog --out ./dist</code><button class="copy-btn" aria-label="Copy">Copy</button></pre>
 </div>
 
+<div class="tool-card">
+    <h3><code>mdx update</code> &mdash; Self-update</h3>
+    <p>Updates mdx to the latest release from GitHub. Downloads the correct binary for your platform automatically.</p>
+<pre><span class="code-lang">bash</span><code>mdx update</code><button class="copy-btn" aria-label="Copy">Copy</button></pre>
+</div>
+
+<div class="tool-card">
+    <h3><code>mdx completions</code> &mdash; Shell completions</h3>
+    <p>Generate or install tab completions for your shell. Supports bash, zsh, fish, and PowerShell.</p>
+<pre><span class="code-lang">bash</span><code>mdx completions install              <span style="color:var(--fg-muted)"># auto-detect shell and install</span>
+mdx completions bash                 <span style="color:var(--fg-muted)"># print bash completions</span>
+mdx completions zsh                  <span style="color:var(--fg-muted)"># print zsh completions</span>
+mdx completions fish                 <span style="color:var(--fg-muted)"># print fish completions</span>
+mdx completions powershell           <span style="color:var(--fg-muted)"># print PowerShell completions</span></code><button class="copy-btn" aria-label="Copy">Copy</button></pre>
+</div>
+
 <!-- ===== Serve Mode ===== -->
 <h2 id="serve-mode">Serve Mode <a href="#serve-mode" class="anchor" aria-hidden="true">#</a></h2>
 
@@ -588,7 +629,7 @@ mdx export --to txt README.md    <span style="color:var(--fg-muted)"># plain tex
       |
       |-->  HTML renderer  -->  axum server  -->  <span class="hl">browser</span> (live reload via SSE)
       |
-      '-->  CLI tools (<span class="hl">stats, fmt, lint, diff, export, publish</span>)</code></pre></div>
+      '-->  CLI tools (<span class="hl">stats, fmt, lint, diff, export, fetch, publish</span>)</code></pre></div>
 
 <!-- ===== Credits ===== -->
 <h2 id="credits">Credits <a href="#credits" class="anchor" aria-hidden="true">#</a></h2>
@@ -611,15 +652,18 @@ mdx export --to txt README.md    <span style="color:var(--fg-muted)"># plain tex
         <tr><td><a href="https://github.com/mitsuhiko/similar">similar</a></td><td>Text diffing</td></tr>
         <tr><td><a href="https://github.com/mgeisler/textwrap">textwrap</a></td><td>Text wrapping</td></tr>
         <tr><td><a href="https://github.com/image-rs/image">image</a></td><td>Image decoding (PNG, JPEG, GIF, WebP)</td></tr>
-        <tr><td><a href="https://docs.rs/genpdfi">genpdfi</a></td><td>PDF generation</td></tr>
+        <tr><td><a href="https://github.com/theiskaa/genpdfi">genpdfi</a></td><td>PDF generation</td></tr>
+        <tr><td><a href="https://github.com/theiskaa/markdown2pdf">markdown2pdf</a></td><td>Markdown to PDF conversion</td></tr>
         <tr><td><a href="https://github.com/algesten/ureq">ureq</a></td><td>HTTP client (URL fetching)</td></tr>
+        <tr><td><a href="https://github.com/niklak/dom_smoothie">dom_smoothie</a></td><td>Web article extraction (Readability)</td></tr>
+        <tr><td><a href="https://github.com/letmutex/htmd">htmd</a></td><td>HTML to markdown conversion</td></tr>
     </tbody>
 </table>
 
 <!-- ===== Footer ===== -->
 <footer class="footer">
     <span>MIT License &middot; Built with <a href="https://www.rust-lang.org">Rust</a></span>
-    <span><a href="https://github.com/Harsh-2002/MD">Source on GitHub</a></span>
+    <span><a href="https://github.com/Harsh-2002/mdx">Source on GitHub</a></span>
 </footer>
 
 <a href="#top" class="back-to-top">Back to top</a>
