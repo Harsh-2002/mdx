@@ -23,3 +23,8 @@ pub mod toc;
 pub mod update;
 #[cfg(feature = "watch")]
 pub mod watch;
+
+/// Estimate LLM token count. Heuristic: ~4 characters per token.
+pub fn estimate_tokens(text: &str) -> u64 {
+    (text.len() as f64 / 4.0).ceil() as u64
+}

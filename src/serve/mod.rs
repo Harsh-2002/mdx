@@ -9,8 +9,9 @@ use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::Html;
+use axum::response::{Html, IntoResponse, Response};
 use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::http::header;
 use axum::routing::{get, post};
 use tokio::sync::broadcast;
 use tokio_stream::StreamExt;
@@ -604,16 +605,42 @@ async fn serve_multi_files(args: &ServeArgs) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+// --- Content negotiation helpers ---
+
+fn wants_markdown(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("text/markdown"))
+        .unwrap_or(false)
+}
+
+fn markdown_response(markdown: &str) -> Response {
+    let tokens = crate::estimate_tokens(markdown);
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/markdown; charset=utf-8")
+        .header(header::VARY, "Accept")
+        .header("X-Markdown-Tokens", tokens.to_string())
+        .body(axum::body::Body::from(markdown.to_string()))
+        .unwrap()
+        .into_response()
+}
+
 // --- Route handlers ---
 
-async fn serve_page_single(State(state): State<Arc<AppState>>) -> Html<String> {
+async fn serve_page_single(
+    headers: axum::http::HeaderMap,
+    State(state): State<Arc<AppState>>,
+) -> Response {
     let files = state.files.read().unwrap();
-    Html(
-        files
-            .get("")
-            .map(|f| f.full_html.clone())
-            .unwrap_or_default(),
-    )
+    if let Some(entry) = files.get("") {
+        if wants_markdown(&headers) {
+            return markdown_response(&entry.markdown);
+        }
+        Html(entry.full_html.clone()).into_response()
+    } else {
+        Html(String::new()).into_response()
+    }
 }
 
 async fn serve_raw_single(State(state): State<Arc<AppState>>) -> Html<String> {
@@ -632,16 +659,19 @@ async fn serve_index(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn serve_page_multi(
+    headers: axum::http::HeaderMap,
     State(state): State<Arc<AppState>>,
     Path(file): Path<String>,
-) -> Html<String> {
+) -> Response {
     let files = state.files.read().unwrap();
-    Html(
-        files
-            .get(&file)
-            .map(|f| f.full_html.clone())
-            .unwrap_or_else(|| "Not found".to_string()),
-    )
+    if let Some(entry) = files.get(&file) {
+        if wants_markdown(&headers) {
+            return markdown_response(&entry.markdown);
+        }
+        Html(entry.full_html.clone()).into_response()
+    } else {
+        Html("Not found".to_string()).into_response()
+    }
 }
 
 async fn serve_raw_multi(

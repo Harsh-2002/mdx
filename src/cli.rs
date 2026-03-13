@@ -245,6 +245,9 @@ pub struct FetchArgs {
     /// Include YAML front matter with title, author, date, source URL
     #[arg(long)]
     pub metadata: bool,
+    /// Show estimated token count
+    #[arg(long)]
+    pub tokens: bool,
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]

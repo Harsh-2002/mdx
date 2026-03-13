@@ -88,6 +88,63 @@ fn http_agent() -> ureq::Agent {
     config.into()
 }
 
+fn http_get_with_accept(url: &str, accept: &str) -> (u16, String, Option<String>) {
+    let agent = http_agent();
+    for attempt in 0..3 {
+        match agent.get(url).header("Accept", accept).call() {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let ct = resp
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| v.to_string());
+                let body = resp.into_body().read_to_string().unwrap_or_default();
+                return (status, body, ct);
+            }
+            Err(ureq::Error::StatusCode(code)) => {
+                return (code, String::new(), None);
+            }
+            Err(_) if attempt < 2 => {
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            Err(_) => return (0, String::new(), None),
+        }
+    }
+    (0, String::new(), None)
+}
+
+/// Returns (status, body, headers_map) where headers_map has lowercased keys.
+fn http_get_with_headers(
+    url: &str,
+    accept: &str,
+) -> (u16, String, std::collections::HashMap<String, String>) {
+    let agent = http_agent();
+    for attempt in 0..3 {
+        match agent.get(url).header("Accept", accept).call() {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let mut headers = std::collections::HashMap::new();
+                for name in resp.headers().keys() {
+                    if let Some(val) = resp.headers().get(name).and_then(|v| v.to_str().ok()) {
+                        headers.insert(name.as_str().to_lowercase(), val.to_string());
+                    }
+                }
+                let body = resp.into_body().read_to_string().unwrap_or_default();
+                return (status, body, headers);
+            }
+            Err(ureq::Error::StatusCode(code)) => {
+                return (code, String::new(), std::collections::HashMap::new());
+            }
+            Err(_) if attempt < 2 => {
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            Err(_) => return (0, String::new(), std::collections::HashMap::new()),
+        }
+    }
+    (0, String::new(), std::collections::HashMap::new())
+}
+
 fn http_get(url: &str) -> (u16, String) {
     let agent = http_agent();
     for attempt in 0..3 {
@@ -742,4 +799,124 @@ fn test_serve_html_has_toc_sidebar() {
     );
 
     let _ = std::fs::remove_file(&tmp);
+}
+
+// ── Content negotiation (MFA) ────────────────────────────────────────
+
+#[test]
+fn test_serve_content_negotiation_markdown() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = write_tmp("md-serve-cn-md.md", "# Negotiation Test\n\nMarkdown body.");
+    let srv = start_serve(&[tmp.to_str().unwrap()]);
+
+    let (status, body, ct) = http_get_with_accept(&srv.url("/"), "text/markdown");
+    assert_eq!(status, 200);
+    assert!(
+        ct.as_deref().unwrap_or("").contains("text/markdown"),
+        "Content-Type should be text/markdown, got: {:?}",
+        ct
+    );
+    assert!(
+        !body.contains("<!DOCTYPE"),
+        "Markdown response should not contain HTML doctype"
+    );
+    assert!(
+        body.contains("# Negotiation Test"),
+        "Should return raw markdown content"
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_serve_content_negotiation_html_default() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = write_tmp("md-serve-cn-html.md", "# HTML Default\n\nHTML body.");
+    let srv = start_serve(&[tmp.to_str().unwrap()]);
+
+    let (status, body, ct) = http_get_with_accept(&srv.url("/"), "text/html");
+    assert_eq!(status, 200);
+    assert!(
+        ct.as_deref().unwrap_or("").contains("text/html"),
+        "Content-Type should be text/html, got: {:?}",
+        ct
+    );
+    assert!(
+        body.contains("<!DOCTYPE html>"),
+        "Should return full HTML page"
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_serve_markdown_has_token_header() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = write_tmp("md-serve-cn-tokens.md", "# Token Test\n\nSome content for tokens.");
+    let srv = start_serve(&[tmp.to_str().unwrap()]);
+
+    let (_status, _body, headers) = http_get_with_headers(&srv.url("/"), "text/markdown");
+    let tokens_header = headers
+        .get("x-markdown-tokens")
+        .and_then(|v| v.parse::<u64>().ok());
+    assert!(
+        tokens_header.is_some(),
+        "X-Markdown-Tokens header should be present"
+    );
+    assert!(
+        tokens_header.unwrap() > 0,
+        "Token count should be greater than 0"
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_serve_markdown_has_vary_header() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = write_tmp("md-serve-cn-vary.md", "# Vary Test\n\nContent.");
+    let srv = start_serve(&[tmp.to_str().unwrap()]);
+
+    let (_status, _body, headers) = http_get_with_headers(&srv.url("/"), "text/markdown");
+    let vary = headers.get("vary").map(|s| s.as_str()).unwrap_or("");
+    assert!(
+        vary.contains("Accept"),
+        "Vary header should contain Accept, got: {}",
+        vary
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_serve_multi_content_negotiation() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join("md-serve-cn-multi");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("agent.md"),
+        "# Agent Page\n\nMulti-file markdown.",
+    )
+    .unwrap();
+
+    let srv = start_serve(&[dir.to_str().unwrap()]);
+
+    let (status, body, ct) = http_get_with_accept(&srv.url("/agent.md"), "text/markdown");
+    assert_eq!(status, 200);
+    assert!(
+        ct.as_deref().unwrap_or("").contains("text/markdown"),
+        "Content-Type should be text/markdown, got: {:?}",
+        ct
+    );
+    assert!(
+        body.contains("# Agent Page"),
+        "Should return raw markdown"
+    );
+    assert!(
+        !body.contains("<!DOCTYPE"),
+        "Should not contain HTML"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
