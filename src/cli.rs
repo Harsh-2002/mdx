@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand, ValueHint};
     version,
     about = "Render markdown beautifully in the terminal",
     subcommand_help_heading = "Commands",
-    after_help = "Examples:\n  mdx README.md                          Render in terminal\n  mdx serve .                            Live preview in browser\n  mdx fetch https://example.com          Fetch web page as markdown\n  mdx stats README.md                    Show word count & stats\n  mdx fmt --check README.md              Check formatting\n  mdx export --to html README.md         Export to HTML\n  mdx export --to pdf README.md          Export to PDF\n  mdx publish ./blog --out ./dist        Generate static site\n  mdx update                             Update to latest version\n  mdx completions install                Install shell completions"
+    after_help = "Examples:\n  mdx README.md                          Render in terminal\n  mdx serve .                            Live preview in browser\n  mdx fetch https://example.com          Fetch web page as markdown\n  mdx stats README.md                    Show word count & stats\n  mdx fmt --check README.md              Check formatting\n  mdx export --to html README.md         Export to HTML\n  mdx export --to pdf README.md          Export to PDF\n  mdx export --to epub README.md         Export to EPUB e-book\n  mdx publish ./blog --out ./dist        Generate static site\n  mdx update                             Update to latest version\n  mdx completions install                Install shell completions"
 )]
 pub struct Args {
     #[command(subcommand)]
@@ -82,11 +82,14 @@ pub enum Command {
     /// Compare two markdown files with colored diff
     Diff(DiffArgs),
 
-    /// Export markdown to another format (html, pdf, json, txt)
+    /// Export markdown to another format (html, pdf, epub, json, txt)
     Export(ExportArgs),
 
     /// Generate a static site from a directory of markdown files
     Publish(PublishArgs),
+
+    /// Search markdown files for a query
+    Search(SearchArgs),
 
     /// Fetch a web page and extract its content as markdown
     #[cfg(feature = "url")]
@@ -201,7 +204,7 @@ pub struct DiffArgs {
 
 #[derive(clap::Args, Debug)]
 #[command(
-    after_help = "Examples:\n  mdx export --to html README.md          Standalone HTML page\n  mdx export --to pdf README.md           PDF document\n  mdx export --to pdf -o out.pdf file.md  PDF with custom output path\n  mdx export --to json README.md          AST as JSON\n  mdx export --to txt README.md           Plain text (strip formatting)"
+    after_help = "Examples:\n  mdx export --to html README.md          Standalone HTML page\n  mdx export --to pdf README.md           PDF document\n  mdx export --to pdf -o out.pdf file.md  PDF with custom output path\n  mdx export --to epub README.md          EPUB e-book\n  mdx export --to json README.md          AST as JSON\n  mdx export --to txt README.md           Plain text (strip formatting)"
 )]
 pub struct ExportArgs {
     /// Markdown file (reads stdin if omitted)
@@ -209,10 +212,10 @@ pub struct ExportArgs {
     pub file: Option<String>,
 
     /// Output format
-    #[arg(long, value_parser = ["html", "json", "txt", "pdf"])]
+    #[arg(long, value_parser = ["html", "json", "txt", "pdf", "epub"])]
     pub to: String,
 
-    /// Output file path (for pdf: defaults to input filename with .pdf extension)
+    /// Output file path (for pdf/epub: defaults to input filename with matching extension)
     #[arg(short, long, value_hint = ValueHint::FilePath)]
     pub output: Option<String>,
 }
@@ -229,6 +232,31 @@ pub struct PublishArgs {
     /// Output directory for the generated site
     #[arg(long, short, default_value = "dist", value_hint = ValueHint::DirPath)]
     pub out: String,
+}
+
+#[derive(clap::Args, Debug)]
+#[command(
+    after_help = "Examples:\n  mdx search \"rust async\" .            Search current directory\n  mdx search \"BM25\" docs/             Search recursively\n  mdx search --tag rust \"ownership\"    Filter by front matter tag\n  mdx search -n 5 \"error\" .            Top 5 results\n  mdx search -l \"query\" .              List matching files only"
+)]
+pub struct SearchArgs {
+    /// Search query
+    pub query: String,
+
+    /// Files or directories to search (default: current directory)
+    #[arg(value_hint = ValueHint::AnyPath)]
+    pub paths: Vec<String>,
+
+    /// Max results (default: 10)
+    #[arg(short = 'n', long, default_value = "10")]
+    pub limit: usize,
+
+    /// Filter by front matter tag
+    #[arg(long)]
+    pub tag: Option<String>,
+
+    /// Show file paths only (for piping)
+    #[arg(short = 'l', long)]
+    pub files_only: bool,
 }
 
 #[cfg(feature = "url")]

@@ -184,6 +184,21 @@ fn main() {
         return;
     }
 
+    if let Some(md::cli::Command::Search(ref search_args)) = args.command {
+        let sa = md::search::SearchArgs {
+            query: search_args.query.clone(),
+            paths: search_args.paths.clone(),
+            limit: search_args.limit,
+            tag: search_args.tag.clone(),
+            files_only: search_args.files_only,
+        };
+        md::search::run(&sa).unwrap_or_else(|e| {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        });
+        return;
+    }
+
     if let Some(md::cli::Command::Publish(ref publish_args)) = args.command {
         let pa = md::publish::PublishArgs {
             dir: publish_args.dir.clone(),

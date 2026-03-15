@@ -62,9 +62,21 @@ pub fn run(args: &ExportArgs) -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|| "output.pdf".to_string());
             export_pdf(&content, &output_path)?;
         }
+        "epub" => {
+            let output_path = args
+                .output
+                .clone()
+                .or_else(|| {
+                    args.file
+                        .as_ref()
+                        .map(|f| f.replace(".md", ".epub").replace(".markdown", ".epub"))
+                })
+                .unwrap_or_else(|| "output.epub".to_string());
+            export_epub(&content, &output_path, args.file.as_deref())?;
+        }
         other => {
             return Err(format!(
-                "Unsupported format: '{}'. Supported: html, json, txt, pdf",
+                "Unsupported format: '{}'. Supported: html, json, txt, pdf, epub",
                 other
             )
             .into());
@@ -300,6 +312,167 @@ fn extract_title<'a>(root: &'a AstNode<'a>) -> Option<String> {
     }
     None
 }
+
+// ─── EPUB Export via epub-builder ────────────────────────────────────────────
+
+fn export_epub(
+    markdown: &str,
+    output_path: &str,
+    source_file: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use epub_builder::{EpubBuilder, EpubContent, EpubVersion, ZipLibrary};
+
+    let fm = crate::frontmatter::parse(markdown);
+
+    let title = fm
+        .title
+        .clone()
+        .or_else(|| {
+            let arena = typed_arena::Arena::new();
+            let root = parse_markdown(&arena, markdown);
+            extract_title(root)
+        })
+        .or_else(|| {
+            source_file.map(|f| {
+                std::path::Path::new(f)
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            })
+        })
+        .unwrap_or_else(|| "Untitled".to_string());
+
+    let html_fragment = crate::html::render_fragment(markdown, "base16-ocean.dark");
+
+    let base_dir = source_file
+        .map(|f| {
+            std::path::Path::new(f)
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .to_path_buf()
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    let (processed_html, images) = process_images(&html_fragment, &base_dir);
+    let xhtml_body = html_to_xhtml(&processed_html);
+
+    let xhtml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <title>{title}</title>
+    <link rel="stylesheet" type="text/css" href="stylesheet.css" />
+</head>
+<body>
+{xhtml_body}
+</body>
+</html>"#
+    );
+
+    let mut builder = EpubBuilder::new(ZipLibrary::new()?)?;
+    builder.epub_version(EpubVersion::V30);
+    builder.metadata("title", &title)?;
+    if let Some(ref date) = fm.date {
+        builder.metadata("description", format!("Date: {}", date))?;
+    }
+    for tag in &fm.tags {
+        builder.metadata("subject", tag)?;
+    }
+
+    builder.stylesheet(crate::html::assets::EPUB_CSS.as_bytes())?;
+
+    for (epub_path, mime, bytes) in &images {
+        builder.add_resource(epub_path, bytes.as_slice(), mime)?;
+    }
+
+    builder.add_content(EpubContent::new("content.xhtml", xhtml.as_bytes()).title(&title))?;
+
+    let mut output_file = std::fs::File::create(output_path)?;
+    builder.generate(&mut output_file)?;
+
+    eprintln!("  Written to {}", output_path);
+    Ok(())
+}
+
+fn process_images(
+    html: &str,
+    base_dir: &std::path::Path,
+) -> (String, Vec<(String, String, Vec<u8>)>) {
+    let mut images = Vec::new();
+    let mut result = String::with_capacity(html.len());
+    let mut remaining = html;
+
+    while let Some(img_start) = remaining.find("<img") {
+        result.push_str(&remaining[..img_start]);
+        let after_img = &remaining[img_start..];
+
+        if let Some(tag_end) = after_img.find('>') {
+            let tag = &after_img[..=tag_end];
+
+            if let Some(src) = extract_attr(tag, "src")
+                && !src.starts_with("http://")
+                && !src.starts_with("https://")
+                && !src.starts_with("data:")
+            {
+                let file_path = base_dir.join(&src);
+                if let Ok(bytes) = std::fs::read(&file_path) {
+                    let filename = std::path::Path::new(&src)
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    let epub_path = format!("images/{}", filename);
+                    let mime = mime_from_ext(&src);
+                    let new_tag = tag.replace(&format!("\"{}\"", src), &format!("\"{}\"", epub_path));
+                    result.push_str(&new_tag);
+                    images.push((epub_path, mime, bytes));
+                    remaining = &remaining[img_start + tag_end + 1..];
+                    continue;
+                }
+            }
+
+            result.push_str(tag);
+            remaining = &remaining[img_start + tag_end + 1..];
+        } else {
+            result.push_str(after_img);
+            remaining = "";
+        }
+    }
+    result.push_str(remaining);
+
+    (result, images)
+}
+
+fn extract_attr(tag: &str, attr_name: &str) -> Option<String> {
+    let pattern = format!("{}=\"", attr_name);
+    if let Some(start) = tag.find(&pattern) {
+        let value_start = start + pattern.len();
+        if let Some(end) = tag[value_start..].find('"') {
+            return Some(tag[value_start..value_start + end].to_string());
+        }
+    }
+    None
+}
+
+fn mime_from_ext(path: &str) -> String {
+    let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "webp" => "image/webp",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
+fn html_to_xhtml(html: &str) -> String {
+    html.replace("<br>", "<br />").replace("<hr>", "<hr />")
+}
+
+// ─── PDF Export via genpdfi ───────────────────────────────────────────────────
 
 pub fn export_pdf(markdown: &str, output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let arena = typed_arena::Arena::new();

@@ -16,14 +16,6 @@ struct Post {
     markdown: String,
 }
 
-struct FrontMatter {
-    title: Option<String>,
-    date: Option<String>,
-    #[allow(dead_code)]
-    tags: Vec<String>,
-    draft: bool,
-}
-
 pub fn run(args: &PublishArgs) -> Result<(), Box<dyn std::error::Error>> {
     let dir = Path::new(&args.dir);
     if !dir.is_dir() {
@@ -49,13 +41,13 @@ pub fn run(args: &PublishArgs) -> Result<(), Box<dyn std::error::Error>> {
     for entry in &entries {
         let path = entry.path();
         let content = std::fs::read_to_string(&path)?;
-        let fm = parse_front_matter(&content);
+        let fm = crate::frontmatter::parse(&content);
 
         if fm.draft {
             continue;
         }
 
-        let markdown = strip_front_matter(&content);
+        let markdown = crate::frontmatter::strip(&content).to_string();
         let filename = path.file_stem().unwrap().to_string_lossy().to_string();
         let slug = filename.clone();
 
@@ -119,58 +111,6 @@ pub fn run(args: &PublishArgs) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("  Index page -> {}/index.html", args.out);
 
     Ok(())
-}
-
-fn parse_front_matter(content: &str) -> FrontMatter {
-    let mut fm = FrontMatter {
-        title: None,
-        date: None,
-        tags: Vec::new(),
-        draft: false,
-    };
-
-    if !content.starts_with("---") {
-        return fm;
-    }
-
-    let rest = &content[3..];
-    if let Some(end) = rest.find("\n---") {
-        let block = &rest[..end];
-        for line in block.lines() {
-            let line = line.trim();
-            if let Some((key, value)) = line.split_once(':') {
-                let key = key.trim().to_lowercase();
-                let value = value
-                    .trim()
-                    .trim_matches('"')
-                    .trim_matches('\'')
-                    .to_string();
-                match key.as_str() {
-                    "title" => fm.title = Some(value),
-                    "date" => fm.date = Some(value),
-                    "tags" => {
-                        fm.tags = value.split(',').map(|s| s.trim().to_string()).collect();
-                    }
-                    "draft" => fm.draft = value == "true",
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    fm
-}
-
-fn strip_front_matter(content: &str) -> String {
-    if !content.starts_with("---") {
-        return content.to_string();
-    }
-    let rest = &content[3..];
-    if let Some(end) = rest.find("\n---") {
-        rest[end + 4..].trim_start_matches('\n').to_string()
-    } else {
-        content.to_string()
-    }
 }
 
 fn extract_first_heading(markdown: &str) -> Option<String> {

@@ -1430,3 +1430,41 @@ fn test_fixture_files_narrow_width() {
         }
     }
 }
+
+// ── EPUB export ─────────────────────────────────────────────────────
+
+#[test]
+fn test_export_epub_creates_file() {
+    let tmp = write_tmp("md-test-epub.md", "# Hello World\n\nSome **bold** text.");
+    let epub_path = tmp.with_extension("epub");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["export", "--to", "epub"])
+        .arg(&tmp)
+        .output()
+        .expect("Failed to execute mdx");
+    assert!(output.status.success(), "EPUB export should succeed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(epub_path.exists(), "EPUB file should be created");
+    let bytes = std::fs::read(&epub_path).unwrap();
+    assert!(bytes.len() > 100, "EPUB file should have content");
+    assert_eq!(&bytes[0..2], b"PK", "EPUB should be a zip file (PK magic bytes)");
+    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(&epub_path);
+}
+
+#[test]
+fn test_export_epub_custom_output() {
+    let tmp = write_tmp("md-test-epub-custom.md", "# Custom Output\n\nTest content.");
+    let custom_output = std::env::temp_dir().join("mdx-test-custom-output.epub");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["export", "--to", "epub", "-o"])
+        .arg(&custom_output)
+        .arg(&tmp)
+        .output()
+        .expect("Failed to execute mdx");
+    assert!(output.status.success(), "EPUB export with -o should succeed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(custom_output.exists(), "Custom output EPUB file should be created");
+    let bytes = std::fs::read(&custom_output).unwrap();
+    assert_eq!(&bytes[0..2], b"PK", "EPUB should be a zip file");
+    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(&custom_output);
+}

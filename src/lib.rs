@@ -5,6 +5,7 @@ pub mod export;
 #[cfg(feature = "url")]
 pub mod fetch;
 pub mod fmt;
+pub mod frontmatter;
 pub mod html;
 pub mod lint;
 pub mod parse;
@@ -12,6 +13,7 @@ pub mod parse;
 pub mod present;
 pub mod publish;
 pub mod render;
+pub mod search;
 #[cfg(feature = "serve")]
 pub mod serve;
 pub mod stats;

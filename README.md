@@ -1,6 +1,6 @@
 # mdx
 
-A fast terminal markdown renderer and toolchain built in Rust. Renders markdown with syntax highlighting, tables, and images — directly in your terminal. In browser preview mode (`mdx serve`), also supports math (KaTeX) and mermaid diagrams. Includes a markdown formatter, linter, diff viewer, format converter, web page fetcher, and static site generator.
+A fast terminal markdown renderer and toolchain built in Rust. Renders markdown with syntax highlighting, tables, and images — directly in your terminal. In browser preview mode (`mdx serve`), also supports math (KaTeX) and mermaid diagrams. Includes a formatter, linter, diff viewer, full-text search, format converter, web page fetcher, and static site generator.
 
 ## Install
 
@@ -29,31 +29,37 @@ cargo install --git https://github.com/Harsh-2002/mdx --features serve
 ```bash
 mdx file.md                          # render in terminal
 mdx file.md --pager                  # render and pipe through less
+cat README.md | mdx                  # read from stdin
+mdx https://example.com/doc.md       # render from URL
+
 mdx serve file.md                    # browser preview with live reload
 mdx serve ./notes/                   # serve a directory as a note-taking app
 mdx serve a.md b.md                  # serve multiple files with index page
+
+mdx search "query" ./docs/           # full-text search across markdown files
+mdx search --tag rust "ownership"    # filter by front matter tag
+
 mdx fetch https://example.com        # fetch web page as markdown
-mdx fetch --raw https://example.com  # full HTML to markdown (skip readability)
-mdx fetch --tokens https://example.com  # show estimated token count
 mdx fetch -o article.md URL          # save fetched markdown to file
+
+mdx export --to html file.md         # export to standalone HTML
+mdx export --to pdf file.md          # export to PDF
+mdx export --to epub file.md         # export to EPUB e-book
+mdx export --to json file.md         # export AST as JSON
+mdx export --to txt file.md          # strip formatting to plain text
+
 mdx stats file.md                    # show word count, headings, reading time
+mdx toc file.md                      # print table of contents
 mdx fmt file.md                      # format/prettify markdown
 mdx fmt --check file.md              # check formatting (for CI)
 mdx lint file.md                     # check for broken links, issues
 mdx diff old.md new.md               # colored side-by-side diff
-mdx diff -u old.md new.md            # unified diff
-mdx export --to html file.md         # export to standalone HTML
-mdx export --to pdf file.md          # export to PDF (no browser needed)
-mdx export --to json file.md         # export AST as JSON
-mdx export --to txt file.md          # strip formatting to plain text
-mdx toc file.md                      # print table of contents
+
 mdx present file.md                  # slide presentation in terminal
 mdx watch file.md                    # re-render on file changes
 mdx publish ./blog --out ./dist      # generate a static site
 mdx update                           # self-update to latest version
 mdx completions install              # install shell completions
-cat README.md | mdx                  # read from stdin
-mdx https://example.com/doc.md       # render from URL
 ```
 
 ## Options
@@ -70,15 +76,19 @@ mdx https://example.com/doc.md       # render from URL
 | `--css <FILE>` | Custom CSS for HTML/serve output |
 | `--generate-man` | Generate man page |
 
-## Serve Mode
+## Commands
 
-`mdx serve` turns your markdown into a live browser preview. It supports three modes:
+### `mdx serve` — Browser preview
 
-**Single file** — `mdx serve file.md` opens the file with live reload. Edit in your favorite editor and the browser updates instantly.
+Turns markdown into a live browser preview with hot reload.
 
-**Directory** — `mdx serve ./notes/` shows all `.md` files as a card grid. Click any card to view it. Click the "+" card to create a new note directly from the browser.
-
-**Multiple files** — `mdx serve a.md b.md c.md` serves the listed files with a sidebar for navigation and a search filter.
+```bash
+mdx serve file.md                    # single file with live reload
+mdx serve ./notes/                   # directory as card grid, click to view
+mdx serve a.md b.md c.md             # multiple files with sidebar navigation
+mdx serve file.md -p 8080            # specify port
+mdx serve file.md --css custom.css   # inject custom CSS
+```
 
 All modes include:
 - Built-in markdown editor (toggle with pencil icon or `e`)
@@ -98,23 +108,49 @@ All modes include:
 | `Ctrl+F` | Search in editor |
 | `Ctrl+H` | Search & replace in editor |
 
-## CLI Tools
+### `mdx search` — Full-text search
+
+BM25-ranked search across markdown files. Headings are weighted higher than body text, body text higher than code. Files are parsed in parallel.
+
+```bash
+mdx search "rust async" .            # search current directory
+mdx search "BM25" docs/              # search recursively
+mdx search --tag rust "ownership"    # filter by front matter tag
+mdx search -n 5 "error" .            # top 5 results
+mdx search -l "query" .              # list matching file paths only
+```
+
+Results show the file path, matching heading context, and a highlighted snippet. Automatically skips `.git`, `node_modules`, `target`, and other non-content directories.
 
 ### `mdx fetch` — Web page to markdown
 
-Fetches a web page, extracts the main article content using Mozilla Readability, and renders it as clean markdown in the terminal. When piped, outputs raw markdown (great for LLM pipelines).
+Fetches a web page, extracts the main content using readability, and renders it as clean markdown. When piped, outputs raw markdown (great for LLM pipelines).
 
-Supports the [Markdown for Agents (MFA)](https://developers.cloudflare.com/fundamentals/reference/markdown-for-agents/) protocol: sends `Accept: text/markdown` so MFA-enabled sites (e.g. behind Cloudflare) return pre-converted markdown directly, skipping local HTML conversion. Also reads `X-Markdown-Tokens` and `Content-Signal` response headers.
+Supports the [Markdown for Agents (MFA)](https://developers.cloudflare.com/fundamentals/reference/markdown-for-agents/) protocol: sends `Accept: text/markdown` so MFA-enabled sites return pre-converted markdown directly.
 
 ```bash
 mdx fetch https://example.com              # extract & render in terminal
-mdx fetch --raw https://example.com        # full HTML to markdown (sanitizes scripts)
-mdx fetch --metadata https://example.com   # include YAML front matter (og:image, site_name, etc.)
+mdx fetch --raw https://example.com        # full HTML to markdown (skip readability)
+mdx fetch --metadata https://example.com   # include YAML front matter (title, date, etc.)
 mdx fetch --tokens https://example.com     # show estimated token count
 mdx fetch -o article.md https://example.com  # save to file
 mdx fetch https://example.com | llm        # pipe to LLM
 ```
 
+### `mdx export` — Format conversion
+
+Export markdown to other formats. PDF and EPUB write to a file (defaults to input filename with new extension). HTML, JSON, and TXT print to stdout.
+
+```bash
+mdx export --to html README.md              # standalone HTML page
+mdx export --to pdf README.md               # PDF document (native, no browser needed)
+mdx export --to epub README.md              # EPUB e-book (Apple Books, Kobo, Calibre)
+mdx export --to json README.md              # AST as JSON
+mdx export --to txt README.md               # plain text (strip formatting)
+mdx export --to pdf -o out.pdf file.md      # custom output path
+```
+
+EPUB export embeds local images, maps front matter to EPUB metadata (title, tags), and preserves syntax-highlighted code blocks.
 
 ### `mdx stats` — Document statistics
 
@@ -128,6 +164,16 @@ $ mdx stats README.md
     Images: 0
 Code blocks: 3
   Reading time: ~5 min
+```
+
+### `mdx toc` — Table of contents
+
+Extracts headings and prints a linked table of contents.
+
+```bash
+mdx toc README.md                   # default depth (h1-h3)
+mdx toc --depth 2 README.md         # only h1-h2
+mdx toc --depth 6 README.md         # all heading levels
 ```
 
 ### `mdx fmt` — Markdown formatter
@@ -162,44 +208,15 @@ mdx diff -u old.md new.md        # unified
 mdx diff - new.md                # read first file from stdin
 ```
 
-### `mdx export` — Format conversion
-
-```bash
-mdx export --to html README.md   # standalone HTML page
-mdx export --to pdf README.md    # PDF document (native, no browser needed)
-mdx export --to json README.md   # AST as JSON (for tooling)
-mdx export --to txt README.md    # plain text (strip formatting)
-```
-
-### `mdx update` — Self-update
-
-Updates mdx to the latest release from GitHub.
-
-```bash
-mdx update
-```
-
-### `mdx completions` — Shell completions
-
-Generate or install shell completions for tab completion.
-
-```bash
-mdx completions install              # auto-detect shell and install
-mdx completions bash                 # print bash completions to stdout
-mdx completions zsh                  # print zsh completions to stdout
-mdx completions fish                 # print fish completions to stdout
-mdx completions powershell           # print PowerShell completions to stdout
-```
-
 ### `mdx publish` — Static site generator
 
-Generates a static site from a directory of markdown files. Supports YAML front matter for metadata.
+Generates a static site from a directory of markdown files.
 
 ```bash
 mdx publish ./blog --out ./dist
 ```
 
-Front matter format:
+Supports YAML front matter:
 
 ```yaml
 ---
@@ -216,12 +233,46 @@ draft: true
 - Generates clean URLs: `my-post.md` becomes `my-post/index.html`
 - Shared CSS, blog index with cards, dark/light theme
 
+### `mdx present` — Slide presentation
+
+Presents markdown as slides in the terminal. Splits content on `---` separators.
+
+```bash
+mdx present slides.md
+```
+
+### `mdx watch` — Watch mode
+
+Re-renders markdown in the terminal when the file changes.
+
+```bash
+mdx watch file.md
+```
+
+### `mdx update` — Self-update
+
+Updates mdx to the latest release from GitHub.
+
+```bash
+mdx update
+```
+
+### `mdx completions` — Shell completions
+
+```bash
+mdx completions install              # auto-detect shell and install
+mdx completions bash                 # print bash completions to stdout
+mdx completions zsh                  # print zsh completions to stdout
+mdx completions fish                 # print fish completions to stdout
+mdx completions powershell           # print PowerShell completions to stdout
+```
+
 ## Features
 
 - **Syntax highlighting** — language-aware code blocks via syntect
 - **Tables** — full GFM table rendering with alignment and cell wrapping
-- **Mermaid diagrams** — rendered as interactive SVG in browser preview (`mdx serve`) via mermaid.js
-- **Math** — inline `$...$` and display `$$...$$` via KaTeX in browser preview (`mdx serve`)
+- **Mermaid diagrams** — rendered as interactive SVG in browser preview via mermaid.js
+- **Math** — inline `$...$` and display `$$...$$` via KaTeX in browser preview
 - **Images** — inline image rendering in supported terminals (iTerm2, kitty)
 - **URL fetching** — render markdown directly from URLs
 - **Web page extraction** — `mdx fetch` extracts article content as clean markdown, with MFA content negotiation
@@ -234,13 +285,14 @@ draft: true
 - **Directory mode** — `mdx serve ./dir/` shows a file index with card grid
 - **Multi-file mode** — `mdx serve a.md b.md` with sidebar file navigation
 - **Dark/light theme** — toggle with button or `t` key, persisted in localStorage
+- **Full-text search** — BM25-ranked search across markdown files with `mdx search`
 - **Slide presentation** — `mdx present` splits on `---` for terminal slides
 - **ToC generation** — `mdx toc` extracts headings with depth control
 - **Document stats** — word count, reading time, heading/link/image counts
 - **Formatter** — normalize markdown style with `mdx fmt`
 - **Linter** — check for broken links, duplicates, missing alt text
 - **Diff viewer** — colored side-by-side or unified diff
-- **Format export** — export to HTML, PDF, JSON AST, or plain text
+- **Format export** — export to HTML, PDF, EPUB, JSON AST, or plain text
 - **Static site generator** — `mdx publish` builds a blog from markdown files
 - **Alerts** — GitHub-style note/tip/warning/caution blocks
 - **Footnotes, task lists, strikethrough, autolinks** — full GFM support
@@ -259,7 +311,7 @@ markdown file
      |
      ├──> HTML renderer ──> axum server ──> browser (live reload via SSE)
      |
-     └──> CLI tools (stats, fmt, lint, diff, export, fetch, publish)
+     └──> CLI tools (stats, toc, fmt, lint, diff, search, export, fetch, publish)
 ```
 
 ## Credits
@@ -277,10 +329,13 @@ Built on these libraries:
 | [ratatui](https://github.com/ratatui/ratatui) | TUI framework (watch/present modes) |
 | [crossterm](https://github.com/crossterm-rs/crossterm) | Terminal manipulation |
 | [similar](https://github.com/mitsuhiko/similar) | Text diffing |
+| [rayon](https://github.com/rayon-rs/rayon) | Parallel file parsing (search) |
+| [walkdir](https://github.com/BurntSushi/walkdir) | Recursive directory traversal |
 | [textwrap](https://github.com/mgeisler/textwrap) | Text wrapping |
 | [image](https://github.com/image-rs/image) | Image decoding (PNG, JPEG, GIF, WebP) |
 | [genpdfi](https://github.com/theiskaa/genpdfi) | PDF generation |
 | [markdown2pdf](https://github.com/theiskaa/markdown2pdf) | Markdown to PDF conversion |
+| [epub-builder](https://github.com/lise-henry/epub-builder) | EPUB e-book generation |
 | [ureq](https://github.com/algesten/ureq) | HTTP client (URL fetching) |
 | [dom_smoothie](https://github.com/niklak/dom_smoothie) | Web article extraction (Readability) |
 | [htmd](https://github.com/letmutex/htmd) | HTML to markdown conversion |
