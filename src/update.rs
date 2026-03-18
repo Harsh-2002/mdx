@@ -178,9 +178,7 @@ fn download_and_install(
         Ok(output) if output.status.success() => {}
         Ok(_) | Err(_) => {
             eprintln!("  Warning: could not verify the downloaded binary.");
-            eprintln!(
-                "  Windows may be blocking unsigned executables. Proceeding with update."
-            );
+            eprintln!("  Windows may be blocking unsigned executables. Proceeding with update.");
             eprintln!("  If mdx doesn't work: right-click mdx.exe -> Properties -> Unblock.");
         }
     }
