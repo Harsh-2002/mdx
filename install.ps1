@@ -69,11 +69,26 @@ function Main {
         $dest = Join-Path $installDir "mdx.exe"
         Copy-Item $binary $dest -Force
 
-        # Verify
-        $verOutput = & $dest --version 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "Error: installed binary is not executable." -ForegroundColor Red
-            exit 1
+        # Remove Mark of the Web so SmartScreen won't block the binary
+        Unblock-File -Path $dest -ErrorAction SilentlyContinue
+
+        # Verify (non-fatal — the binary is already installed)
+        $verifyFailed = $false
+        try {
+            $verOutput = & $dest --version 2>&1
+            if ($LASTEXITCODE -ne 0) { $verifyFailed = $true }
+        }
+        catch {
+            $verifyFailed = $true
+        }
+
+        if ($verifyFailed) {
+            Write-Host ""
+            Write-Host "  Warning: could not verify the installed binary." -ForegroundColor Yellow
+            Write-Host "  Windows may be blocking the file. To fix:" -ForegroundColor Yellow
+            Write-Host "    - Right-click '$dest' -> Properties -> check 'Unblock' -> OK" -ForegroundColor Yellow
+            Write-Host "    - If your org uses WDAC/AppLocker, ask IT to allow mdx.exe." -ForegroundColor Yellow
+            Write-Host ""
         }
 
         Add-ToUserPath $installDir
@@ -179,7 +194,12 @@ function Setup-Completions {
     New-Item -ItemType Directory -Path $completionsDir -Force | Out-Null
 
     $completionFile = Join-Path $completionsDir "mdx.ps1"
-    & $MdxBin completions powershell 2>$null | Out-File -FilePath $completionFile -Encoding utf8
+    try {
+        & $MdxBin completions powershell 2>$null | Out-File -FilePath $completionFile -Encoding utf8
+    }
+    catch {
+        return
+    }
 
     if (-not (Test-Path $completionFile) -or (Get-Item $completionFile).Length -eq 0) {
         return

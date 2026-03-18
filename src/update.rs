@@ -162,13 +162,27 @@ fn download_and_install(
     }
 
     // Pre-verify the new binary
-    let output = Command::new(&new_binary)
-        .arg("--version")
-        .output()
-        .map_err(|e| format!("Failed to verify downloaded binary: {}", e))?;
+    let verify_result = Command::new(&new_binary).arg("--version").output();
 
-    if !output.status.success() {
-        return Err("Downloaded binary is invalid (--version check failed)".into());
+    #[cfg(not(windows))]
+    {
+        let output =
+            verify_result.map_err(|e| format!("Failed to verify downloaded binary: {}", e))?;
+        if !output.status.success() {
+            return Err("Downloaded binary is invalid (--version check failed)".into());
+        }
+    }
+
+    #[cfg(windows)]
+    match verify_result {
+        Ok(output) if output.status.success() => {}
+        Ok(_) | Err(_) => {
+            eprintln!("  Warning: could not verify the downloaded binary.");
+            eprintln!(
+                "  Windows may be blocking unsigned executables. Proceeding with update."
+            );
+            eprintln!("  If mdx doesn't work: right-click mdx.exe -> Properties -> Unblock.");
+        }
     }
 
     // Phase 3: Binary replacement
@@ -220,6 +234,9 @@ fn download_and_install(
 
     #[cfg(windows)]
     {
+        // Remove Zone.Identifier ADS from staged binary (defense-in-depth)
+        let _ = fs::remove_file(format!("{}:Zone.Identifier", staging_path.display()));
+
         // Windows locks running executables, but allows renaming them.
         // Rename the running exe out of the way, then move the new one in.
         let old_path = exe_dir.join("mdx.old.exe");
@@ -239,6 +256,9 @@ fn download_and_install(
             let _ = fs::rename(&old_path, &exe_path);
             return Err(format!("Failed to install new binary: {}", e).into());
         }
+
+        // Remove Zone.Identifier ADS from final binary location
+        let _ = fs::remove_file(format!("{}:Zone.Identifier", exe_path.display()));
 
         // Try to delete the old binary (may fail if still locked — that's OK,
         // cleanup_old_binary() will get it on next launch)
