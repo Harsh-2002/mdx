@@ -206,21 +206,7 @@ fn render_blog_page(post: &Post) -> String {
         </header>
         {body}
     </article>
-    <script type="module">
-        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-        mermaid.initialize({{ startOnLoad: false, theme: 'base', themeVariables: getMermaidThemeVars() }});
-        document.querySelectorAll('code.language-mermaid').forEach(el => {{
-            const pre = el.parentElement;
-            const div = document.createElement('div');
-            div.className = 'mermaid';
-            const src = el.textContent;
-            div.textContent = src;
-            div.setAttribute('data-original', src);
-            pre.replaceWith(div);
-        }});
-        await mermaid.run();
-        window.mermaid = mermaid;
-    </script>
+{MERMAID_BOOTSTRAP}
     <script>{JS_INIT}</script>
     <script>{JS_KATEX}</script>
 </body>
@@ -235,6 +221,7 @@ fn render_blog_page(post: &Post) -> String {
         JS_THEME_EARLY = html::assets::JS_THEME_EARLY,
         JS_INIT = html::assets::JS_INIT,
         JS_KATEX = html::assets::JS_KATEX,
+        MERMAID_BOOTSTRAP = html::assets::MERMAID_BOOTSTRAP,
     )
 }
 

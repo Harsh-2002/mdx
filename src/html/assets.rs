@@ -2192,3 +2192,20 @@ pub const JS_INDEX: &str = r#"
     });
 })();
 "#;
+
+/// Mermaid bootstrap, shared by every HTML page template.
+pub const MERMAID_BOOTSTRAP: &str = r##"    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+        mermaid.initialize({ startOnLoad: false, theme: 'base', themeVariables: getMermaidThemeVars() });
+        document.querySelectorAll('code.language-mermaid').forEach(el => {
+            const pre = el.parentElement;
+            const div = document.createElement('div');
+            div.className = 'mermaid';
+            const src = el.textContent;
+            div.textContent = src;
+            div.setAttribute('data-original', src);
+            pre.replaceWith(div);
+        });
+        await mermaid.run();
+        window.mermaid = mermaid;
+    </script>"##;

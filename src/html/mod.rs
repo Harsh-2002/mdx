@@ -8,7 +8,7 @@ use crate::cli::ThemeName;
 use assets::{
     CSS, FAVICON, FILE_ICON_SVG, JS_EDITOR, JS_EDITOR_DRAG_DROP, JS_EDITOR_MULTI, JS_EDITOR_SEARCH,
     JS_INDEX, JS_INIT, JS_KATEX, JS_LIVE, JS_LIVE_MULTI, JS_THEME_EARLY, KATEX_CSS, KATEX_JS,
-    PENCIL_SVG, PLUS_SVG, PRINT_SVG,
+    MERMAID_BOOTSTRAP, PENCIL_SVG, PLUS_SVG, PRINT_SVG,
 };
 
 /// Render markdown to an HTML fragment (just the article body).
@@ -83,21 +83,7 @@ pub fn render_page(
     </div>
     <article id="content" class="markdown-body">{body}</article>
     <button id="back-to-top"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg></button>
-    <script type="module">
-        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-        mermaid.initialize({{ startOnLoad: false, theme: 'base', themeVariables: getMermaidThemeVars() }});
-        document.querySelectorAll('code.language-mermaid').forEach(el => {{
-            const pre = el.parentElement;
-            const div = document.createElement('div');
-            div.className = 'mermaid';
-            const src = el.textContent;
-            div.textContent = src;
-            div.setAttribute('data-original', src);
-            pre.replaceWith(div);
-        }});
-        await mermaid.run();
-        window.mermaid = mermaid;
-    </script>
+{MERMAID_BOOTSTRAP}
     <script>{JS_INIT}</script>
     <script>{JS_KATEX}</script>
     <script>{JS_LIVE}</script>
@@ -193,21 +179,7 @@ pub fn render_page_multi(
     </div>
     <article id="content" class="markdown-body">{body}</article>
     <button id="back-to-top"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg></button>
-    <script type="module">
-        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-        mermaid.initialize({{ startOnLoad: false, theme: 'base', themeVariables: getMermaidThemeVars() }});
-        document.querySelectorAll('code.language-mermaid').forEach(el => {{
-            const pre = el.parentElement;
-            const div = document.createElement('div');
-            div.className = 'mermaid';
-            const src = el.textContent;
-            div.textContent = src;
-            div.setAttribute('data-original', src);
-            pre.replaceWith(div);
-        }});
-        await mermaid.run();
-        window.mermaid = mermaid;
-    </script>
+{MERMAID_BOOTSTRAP}
     <script>{JS_INIT}</script>
     <script>{JS_KATEX}</script>
     <script>{JS_LIVE_MULTI}</script>
@@ -259,21 +231,7 @@ pub fn render_standalone(
     <button id="theme-toggle"></button>
     <article id="content" class="markdown-body">{body}</article>
     <button id="back-to-top"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg></button>
-    <script type="module">
-        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-        mermaid.initialize({{ startOnLoad: false, theme: 'base', themeVariables: getMermaidThemeVars() }});
-        document.querySelectorAll('code.language-mermaid').forEach(el => {{
-            const pre = el.parentElement;
-            const div = document.createElement('div');
-            div.className = 'mermaid';
-            const src = el.textContent;
-            div.textContent = src;
-            div.setAttribute('data-original', src);
-            pre.replaceWith(div);
-        }});
-        await mermaid.run();
-        window.mermaid = mermaid;
-    </script>
+{MERMAID_BOOTSTRAP}
     <script>{JS_INIT}</script>
     <script>{JS_KATEX}</script>
 </body>
