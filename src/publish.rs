@@ -146,16 +146,28 @@ fn extract_description(markdown: &str) -> String {
         }
         desc.push_str(trimmed);
     }
-    if desc.len() > 160 {
-        let truncated = &desc[..160];
-        // Try to break at a word boundary
-        if let Some(last_space) = truncated.rfind(' ') {
-            format!("{}...", &truncated[..last_space])
-        } else {
-            format!("{}...", truncated)
-        }
-    } else {
-        desc
+    truncate_description(&desc, MAX_DESCRIPTION_CHARS)
+}
+
+/// Max length of a generated meta description, in characters (not bytes).
+const MAX_DESCRIPTION_CHARS: usize = 160;
+
+/// Truncate to `max_chars`, preferring a word boundary. UTF-8 safe.
+///
+/// Slicing at a fixed *byte* offset panics whenever that offset lands inside a
+/// multi-byte sequence, which any accented, CJK, or emoji character can cause.
+fn truncate_description(desc: &str, max_chars: usize) -> String {
+    // Find the byte offset of the character at `max_chars`; `None` means the
+    // string is already short enough.
+    let Some((cut, _)) = desc.char_indices().nth(max_chars) else {
+        return desc.to_string();
+    };
+    let truncated = &desc[..cut];
+    // Try to break at a word boundary. `rfind` returns the byte index of an
+    // ASCII space, which is always a valid char boundary.
+    match truncated.rfind(' ') {
+        Some(last_space) => format!("{}...", &truncated[..last_space]),
+        None => format!("{}...", truncated),
     }
 }
 
@@ -412,5 +424,63 @@ mod chrono_lite {
             let y = if m <= 2 { y + 1 } else { y };
             format!("{:04}-{:02}-{:02}", y, m, d)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_description_multibyte_boundary() {
+        // 200 × "日" = 600 bytes. The old byte-index slice at 160 landed inside
+        // the 54th character and panicked; a char-aware one must not.
+        let markdown = "日".repeat(200);
+        let desc = extract_description(&markdown);
+        assert!(desc.ends_with("..."), "long text should be truncated");
+        assert_eq!(
+            desc.chars().count(),
+            163,
+            "160 chars plus the ellipsis, got: {}",
+            desc
+        );
+    }
+
+    #[test]
+    fn test_extract_description_emoji_boundary() {
+        // 4-byte scalars offset by one ASCII byte, so no fixed byte offset
+        // lands neatly between two of them.
+        let markdown = format!("a{}", "🎉".repeat(200));
+        let desc = extract_description(&markdown);
+        assert!(desc.ends_with("..."));
+    }
+
+    #[test]
+    fn test_extract_description_short_text_untouched() {
+        let desc = extract_description("A short description with café and 日本.");
+        assert_eq!(desc, "A short description with café and 日本.");
+        assert!(!desc.ends_with("..."));
+    }
+
+    #[test]
+    fn test_extract_description_breaks_on_word_boundary() {
+        let markdown = "word ".repeat(60); // 300 bytes, ASCII
+        let desc = extract_description(&markdown);
+        assert!(
+            desc.ends_with("word..."),
+            "should cut at a space, not mid-word, got: {}",
+            desc
+        );
+    }
+
+    #[test]
+    fn test_truncate_description_counts_chars_not_bytes() {
+        // 160 three-byte characters is 480 bytes but exactly the limit, so it
+        // must survive untruncated.
+        let s = "日".repeat(160);
+        assert_eq!(truncate_description(&s, 160), s);
+        // One more character crosses the limit.
+        let s = "日".repeat(161);
+        assert!(truncate_description(&s, 160).ends_with("..."));
     }
 }
