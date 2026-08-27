@@ -23,28 +23,86 @@ use crate::html;
 
 const SYNTAX_THEME: &str = "base16-ocean.dark";
 
+/// Parse the `--host` value into an address to bind.
+fn bind_ip(host: &str) -> Result<IpAddr, Box<dyn std::error::Error>> {
+    if host.eq_ignore_ascii_case("localhost") {
+        return Ok(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    }
+    match host.parse::<IpAddr>() {
+        Ok(ip) => Ok(ip),
+        Err(_) => {
+            let msg = format!(
+                "Invalid --host '{}': expected an IP address like 127.0.0.1 or 0.0.0.0",
+                host
+            );
+            Err(msg.into())
+        }
+    }
+}
+
+/// The loopback host to print for a bind, in URL form.
+fn loopback_host(ip: IpAddr) -> &'static str {
+    match ip {
+        IpAddr::V4(_) => "127.0.0.1",
+        IpAddr::V6(_) => "[::1]",
+    }
+}
+
+/// Format an IP for a URL. IPv6 needs brackets.
+fn url_host(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => format!("[{}]", v6),
+    }
+}
+
+/// The URL to open in the browser. A wildcard bind is reached over loopback.
+fn browser_url(addr: SocketAddr) -> String {
+    let ip = addr.ip();
+    let host = if ip.is_unspecified() {
+        loopback_host(ip).to_string()
+    } else {
+        url_host(ip)
+    };
+    format!("http://{}:{}", host, addr.port())
+}
+
+/// Detect the LAN IP by probing a UDP socket (doesn't send traffic).
+fn lan_ip() -> Option<IpAddr> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("8.8.8.8:80").ok()?;
+    sock.local_addr()
+        .ok()
+        .map(|a| a.ip())
+        .filter(|ip| !ip.is_loopback())
+}
+
 /// Print the server banner: source description, listening URLs, and hint.
-fn print_serve_banner(port: u16, source: &str) {
+fn print_serve_banner(addr: SocketAddr, source: &str) {
+    let ip = addr.ip();
+    let port = addr.port();
+
     eprintln!("  Serving {}", source);
 
-    // Detect LAN IP by probing a UDP socket (doesn't send traffic)
-    let lan_ip = if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
-        if sock.connect("8.8.8.8:80").is_ok() {
-            sock.local_addr()
-                .ok()
-                .map(|a| a.ip())
-                .filter(|ip| *ip != IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    eprintln!("    Local:   http://127.0.0.1:{}", port);
-    if let Some(ip) = lan_ip {
-        eprintln!("    Network: http://{}:{}", ip, port);
+    if ip.is_loopback() || ip.is_unspecified() {
+        eprintln!("    Local:   http://{}:{}", loopback_host(ip), port);
     }
+
+    if ip.is_loopback() {
+        eprintln!("    (local only - use --host 0.0.0.0 to expose on your network)");
+    } else {
+        // Wildcard or a specific interface: reachable from off this machine.
+        let network = if ip.is_unspecified() {
+            lan_ip().map(url_host)
+        } else {
+            Some(url_host(ip))
+        };
+        if let Some(network) = network {
+            eprintln!("    Network: http://{}:{}", network, port);
+        }
+        eprintln!("    Warning: unauthenticated - anyone who can reach this can edit these files");
+    }
+
     eprintln!("  Press Ctrl+C to stop");
 }
 
@@ -71,6 +129,14 @@ struct FileEntry {
 }
 
 pub async fn start_server(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
+    // Raw HTML in the served markdown is dropped unless the user opted in.
+    // Set before anything renders, so the watcher threads inherit it.
+    crate::options::set_allow_raw_html(args.unsafe_html);
+
+    // Fail on a bad --host before we read files or consume stdin. The bind
+    // sites parse it again; this call exists only to move the error earlier.
+    let _validated = bind_ip(&args.host)?;
+
     // Spawn shutdown handler: on signal, print message and exit.
     // This runs independently of axum's graceful shutdown so that
     // long-lived SSE connections and watcher threads cannot prevent exit.
@@ -143,12 +209,12 @@ async fn serve_stdin(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>>
         .route("/raw", get(serve_raw_single))
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], args.port.unwrap_or(0)));
+    let addr = SocketAddr::new(bind_ip(&args.host)?, args.port.unwrap_or(0));
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    let actual_port = listener.local_addr()?.port();
-    let url = format!("http://127.0.0.1:{}", actual_port);
+    let bound = listener.local_addr()?;
+    let url = browser_url(bound);
 
-    print_serve_banner(actual_port, "from stdin (no live reload)");
+    print_serve_banner(bound, "from stdin (no live reload)");
 
     let _ = open::that(&url);
 
@@ -259,12 +325,12 @@ async fn serve_single_file(args: &ServeArgs, file: &str) -> Result<(), Box<dyn s
         .route("/events", get(sse_handler))
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], args.port.unwrap_or(0)));
+    let addr = SocketAddr::new(bind_ip(&args.host)?, args.port.unwrap_or(0));
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    let actual_port = listener.local_addr()?.port();
-    let url = format!("http://127.0.0.1:{}", actual_port);
+    let bound = listener.local_addr()?;
+    let url = browser_url(bound);
 
-    print_serve_banner(actual_port, &filename);
+    print_serve_banner(bound, &filename);
 
     let _ = open::that(&url);
 
@@ -427,13 +493,13 @@ async fn serve_directory(
         )
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], args.port.unwrap_or(0)));
+    let addr = SocketAddr::new(bind_ip(&args.host)?, args.port.unwrap_or(0));
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    let actual_port = listener.local_addr()?.port();
-    let url = format!("http://127.0.0.1:{}", actual_port);
+    let bound = listener.local_addr()?;
+    let url = browser_url(bound);
 
     print_serve_banner(
-        actual_port,
+        bound,
         &format!("{} files from {}", filenames.len(), dir.display()),
     );
 
@@ -591,12 +657,12 @@ async fn serve_multi_files(args: &ServeArgs) -> Result<(), Box<dyn std::error::E
         )
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], args.port.unwrap_or(0)));
+    let addr = SocketAddr::new(bind_ip(&args.host)?, args.port.unwrap_or(0));
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    let actual_port = listener.local_addr()?.port();
-    let url = format!("http://127.0.0.1:{}", actual_port);
+    let bound = listener.local_addr()?;
+    let url = browser_url(bound);
 
-    print_serve_banner(actual_port, &format!("{} files", filenames.len()));
+    print_serve_banner(bound, &format!("{} files", filenames.len()));
 
     let _ = open::that(&url);
 

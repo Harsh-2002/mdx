@@ -214,6 +214,71 @@ fn write_tmp(name: &str, content: &str) -> std::path::PathBuf {
     path
 }
 
+/// Start `mdx serve` and capture the stderr banner (everything up to and
+/// including the "Press Ctrl+C" line) alongside the running process.
+fn start_serve_with_banner(args: &[&str]) -> (ServeProcess, Vec<String>) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .arg("serve")
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to start mdx serve");
+
+    let stderr = child.stderr.take().unwrap();
+    let mut reader = BufReader::new(stderr);
+    let mut banner = Vec::new();
+    let mut port = 0u16;
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                banner.push(line.trim_end().to_string());
+                if port == 0
+                    && let Some(idx) = line.rfind(':')
+                    && let Ok(p) = line[idx + 1..].trim().parse::<u16>()
+                {
+                    port = p;
+                }
+                if line.contains("Press Ctrl+C") {
+                    break;
+                }
+            }
+        }
+    }
+
+    assert!(port > 0, "Failed to detect serve port");
+
+    let drain = std::thread::spawn(move || {
+        let mut buf = String::new();
+        while reader.read_line(&mut buf).unwrap_or(0) > 0 {
+            buf.clear();
+        }
+    });
+
+    std::thread::sleep(Duration::from_millis(500));
+
+    let srv = ServeProcess {
+        child,
+        port,
+        _stderr_drain: Some(drain),
+    };
+    (srv, banner)
+}
+
+/// This machine's non-loopback IPv4, if it has one. Probes a UDP socket, which
+/// picks a route without sending traffic; None when there is no default route
+/// (offline CI), so the caller can skip.
+fn lan_ipv4() -> Option<std::net::IpAddr> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("8.8.8.8:80").ok()?;
+    let ip = sock.local_addr().ok()?.ip();
+    if ip.is_loopback() { None } else { Some(ip) }
+}
+
 // ── Single file serve ────────────────────────────────────────────────
 
 #[test]
@@ -945,4 +1010,160 @@ fn test_serve_put_source_rejects_traversal() {
     );
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+// ── Raw HTML sanitising ──────────────────────────────────────────────
+
+const XSS_DOC: &str =
+    "# Untrusted\n\n<script>alert('pwned')</script>\n\nInline <img src=x onerror=alert(1)> tail.\n";
+
+#[test]
+fn test_serve_strips_raw_html_by_default() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = write_tmp("md-serve-xss.md", XSS_DOC);
+    let srv = start_serve(&[tmp.to_str().unwrap()]);
+
+    let (status, body) = http_get(&srv.url("/"));
+    assert_eq!(status, 200);
+    assert!(body.contains("Untrusted"), "Document should still render");
+    assert!(
+        !body.contains("alert('pwned')"),
+        "A <script> in markdown must not reach the served page"
+    );
+    assert!(
+        !body.contains("onerror=alert(1)"),
+        "Inline raw HTML must not reach the served page"
+    );
+
+    // /raw has no page chrome, so it is the cleanest place to check the shape.
+    let (status, raw) = http_get(&srv.url("/raw"));
+    assert_eq!(status, 200);
+    assert!(
+        raw.contains("<!-- raw HTML omitted -->"),
+        "Raw HTML should be replaced by comrak's omitted marker, got: {}",
+        raw
+    );
+    assert!(
+        raw.contains("Inline") && raw.contains("tail."),
+        "Text around the stripped tag should survive, got: {}",
+        raw
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_serve_unsafe_html_renders_raw_html() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = write_tmp("md-serve-unsafe-html.md", XSS_DOC);
+    let srv = start_serve(&["--unsafe-html", tmp.to_str().unwrap()]);
+
+    let (status, raw) = http_get(&srv.url("/raw"));
+    assert_eq!(status, 200);
+    assert!(
+        raw.contains("<script>alert('pwned')</script>"),
+        "--unsafe-html should pass raw HTML through, got: {}",
+        raw
+    );
+    assert!(
+        !raw.contains("<!-- raw HTML omitted -->"),
+        "--unsafe-html should omit nothing, got: {}",
+        raw
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+// ── Bind address ─────────────────────────────────────────────────────
+
+#[test]
+fn test_serve_default_bind_is_loopback_only() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = write_tmp("md-serve-bind.md", "# Bind Test");
+    let srv = start_serve(&[tmp.to_str().unwrap()]);
+
+    // Positive control: the server is up, on loopback.
+    let (status, _) = http_get(&srv.url("/"));
+    assert_eq!(status, 200, "Server should be reachable on 127.0.0.1");
+
+    // Same server, same port, addressed by this machine's LAN IP.
+    match lan_ipv4() {
+        Some(ip) => {
+            let addr = std::net::SocketAddr::new(ip, srv.port);
+            let err = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2))
+                .err()
+                .map(|e| e.kind());
+            assert!(
+                err.is_some(),
+                "Default bind must not accept connections at {}",
+                addr
+            );
+            assert_ne!(
+                err,
+                Some(std::io::ErrorKind::TimedOut),
+                "Inconclusive: {} timed out (firewall DROP), so this run proves nothing",
+                addr
+            );
+        }
+        None => eprintln!("  Skipping LAN check: no non-loopback IPv4 on this machine"),
+    }
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_serve_banner_hides_network_url_by_default() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = write_tmp("md-serve-banner.md", "# Banner Test");
+    let (_srv, banner) = start_serve_with_banner(&[tmp.to_str().unwrap()]);
+    let text = banner.join("\n");
+
+    assert!(
+        text.contains("Local:   http://127.0.0.1:"),
+        "Banner should advertise the loopback URL, got: {}",
+        text
+    );
+    assert!(
+        !text.contains("Network:"),
+        "A loopback bind must not advertise a LAN URL, got: {}",
+        text
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_serve_host_wildcard_warns_about_exposure() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = write_tmp("md-serve-host.md", "# Host Test");
+    let (srv, banner) = start_serve_with_banner(&["--host", "0.0.0.0", tmp.to_str().unwrap()]);
+    let text = banner.join("\n");
+
+    assert!(
+        text.contains("Warning:"),
+        "--host 0.0.0.0 must warn that the server is unauthenticated, got: {}",
+        text
+    );
+
+    // And it is still reachable over loopback.
+    let (status, _) = http_get(&srv.url("/"));
+    assert_eq!(status, 200);
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_serve_rejects_invalid_host() {
+    let out = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["serve", "--host", "not-an-ip"])
+        .arg(write_tmp("md-serve-badhost.md", "# x").to_str().unwrap())
+        .output()
+        .expect("Failed to run mdx serve");
+    assert!(!out.status.success(), "Invalid --host should exit non-zero");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Invalid --host"),
+        "Should explain the bad host, got: {}",
+        stderr
+    );
 }

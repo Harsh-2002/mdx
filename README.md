@@ -88,6 +88,8 @@ mdx serve ./notes/                   # directory as card grid, click to view
 mdx serve a.md b.md c.md             # multiple files with sidebar navigation
 mdx serve file.md -p 8080            # specify port
 mdx serve file.md --css custom.css   # inject custom CSS
+mdx serve file.md --host 0.0.0.0     # expose on your LAN (see warning below)
+mdx serve file.md --unsafe-html      # render raw HTML in the document
 ```
 
 All modes include:
@@ -98,6 +100,11 @@ All modes include:
 - Dark/light theme toggle
 - Table of contents sidebar
 - **Markdown for Agents** — AI agents sending `Accept: text/markdown` get raw markdown with `X-Markdown-Tokens` and `Vary: Accept` headers instead of HTML
+
+**Security defaults**
+
+- Binds `127.0.0.1` — the preview is reachable only from this machine. `--host 0.0.0.0` exposes it to your network, and the server is unauthenticated: anyone who can reach the port can read your files, overwrite them, create new ones and upload into `./assets`.
+- Raw HTML inside markdown is dropped, so a `<script>` in a downloaded or agent-written document cannot run in your browser. `--unsafe-html` renders it (use it only for documents you trust). This affects READMEs: `<details>` collapsibles and `<div align="center">` logo/badge blocks are dropped whole — tags *and* the content between them — because an HTML block runs to the next blank line. Markdown images, tables, code fences, math, mermaid and GFM alerts are unaffected.
 
 | Key | Action |
 |-----|--------|

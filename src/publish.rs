@@ -6,6 +6,7 @@ use crate::html::assets::CSS;
 pub struct PublishArgs {
     pub dir: String,
     pub out: String,
+    pub unsafe_html: bool,
 }
 
 struct Post {
@@ -17,6 +18,11 @@ struct Post {
 }
 
 pub fn run(args: &PublishArgs) -> Result<(), Box<dyn std::error::Error>> {
+    // Raw HTML in posts is dropped unless the author opts in: a published site
+    // runs on a real origin, where an injected <script> is worse than in a
+    // local preview.
+    crate::options::set_allow_raw_html(args.unsafe_html);
+
     let dir = Path::new(&args.dir);
     if !dir.is_dir() {
         return Err(format!("'{}' is not a directory", args.dir).into());

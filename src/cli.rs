@@ -123,6 +123,25 @@ pub struct ServeArgs {
     /// Custom CSS file to inject
     #[arg(long, value_name = "FILE", value_hint = ValueHint::FilePath)]
     pub css: Option<String>,
+
+    /// Address to bind to (default: loopback only, reachable from this machine)
+    ///
+    /// Use --host 0.0.0.0 to reach the preview from other devices on your
+    /// network. The preview server has no authentication: anyone who can reach
+    /// the port can read these files, overwrite them (PUT /source), create new
+    /// ones (POST /create) and upload files into ./assets (POST /upload).
+    /// Accepts an IP address or "localhost".
+    #[arg(long, default_value = "127.0.0.1", value_name = "ADDR")]
+    pub host: String,
+
+    /// Render raw HTML embedded in the markdown (unsafe)
+    ///
+    /// Raw HTML is dropped by default, so a `<script>` tag in a downloaded,
+    /// cloned or agent-written document cannot run in your browser. Turn this
+    /// on only for documents you trust; it also re-enables javascript: and
+    /// data: links.
+    #[arg(long)]
+    pub unsafe_html: bool,
 }
 
 #[cfg(feature = "watch")]
@@ -236,6 +255,14 @@ pub struct PublishArgs {
     /// Output directory for the generated site
     #[arg(long, short, default_value = "dist", value_hint = ValueHint::DirPath)]
     pub out: String,
+
+    /// Render raw HTML embedded in the markdown (unsafe)
+    ///
+    /// Raw HTML is dropped by default. A published site runs on a real origin,
+    /// where a `<script>` from a post you did not write is worse than in a
+    /// local preview. Turn this on only for content you trust.
+    #[arg(long)]
+    pub unsafe_html: bool,
 }
 
 #[derive(clap::Args, Debug)]

@@ -27,6 +27,11 @@ pub struct ExportArgs {
 }
 
 pub fn run(args: &ExportArgs) -> Result<(), Box<dyn std::error::Error>> {
+    // Export converts a document the user named into a file they asked for, so
+    // it keeps rendering raw HTML. serve and publish default the other way and
+    // gate it behind --unsafe-html.
+    crate::options::set_allow_raw_html(true);
+
     let content = read_input(&args.file)?;
     let title = args.file.as_deref().unwrap_or("document");
 

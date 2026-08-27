@@ -204,6 +204,7 @@ fn main() {
         let pa = md::publish::PublishArgs {
             dir: publish_args.dir.clone(),
             out: publish_args.out.clone(),
+            unsafe_html: publish_args.unsafe_html,
         };
         md::publish::run(&pa).unwrap_or_else(|e| {
             eprintln!("Error: {}", e);

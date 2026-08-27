@@ -9,6 +9,8 @@
 //! marker is gone and the escapes are permanent. One constructor, three
 //! call sites.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use comrak::Options;
 
 /// Wrap column used by `mdx fmt` when re-emitting CommonMark.
@@ -50,11 +52,34 @@ pub fn markdown_options() -> Options<'static> {
     options
 }
 
+/// Whether raw HTML embedded in markdown is rendered as-is.
+///
+/// Off by default: markdown from a repo, a download or an agent can carry a
+/// `<script>` tag, and serve/publish put the result straight into a browser.
+/// Commands that want raw HTML (`serve --unsafe-html`, `publish --unsafe-html`,
+/// `export`) set this once at startup, before anything is rendered, so worker
+/// threads inherit the value. Process-wide on purpose: threading it through
+/// every render_* signature would push render_page_multi to 8 parameters and
+/// trip clippy::too_many_arguments.
+static ALLOW_RAW_HTML: AtomicBool = AtomicBool::new(false);
+
+/// Set whether raw HTML in markdown is rendered. Call once, before rendering.
+pub fn set_allow_raw_html(allow: bool) {
+    ALLOW_RAW_HTML.store(allow, Ordering::Relaxed);
+}
+
+/// Whether raw HTML in markdown is currently rendered.
+pub fn allow_raw_html() -> bool {
+    ALLOW_RAW_HTML.load(Ordering::Relaxed)
+}
+
 /// Options for the HTML renderer (`serve`, `export`, `publish`).
 pub fn html_options() -> Options<'static> {
     let mut options = markdown_options();
-    // Raw HTML and non-http(s) links pass through untouched.
-    options.render.r#unsafe = true;
+    // Raw HTML and non-http(s) links pass through only when the user opted in.
+    // With this off, comrak replaces raw HTML with `<!-- raw HTML omitted -->`
+    // and blanks javascript:/vbscript:/file:/data: hrefs.
+    options.render.r#unsafe = allow_raw_html();
     options
 }
 
@@ -71,6 +96,7 @@ pub fn fmt_options(width: usize) -> Options<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::html::render_fragment;
 
     /// The invariant this module exists to hold: no path may quietly parse a
     /// smaller subset of markdown than the terminal renderer does.
@@ -103,13 +129,56 @@ mod tests {
         );
     }
 
+    /// The switch is process-wide, so every assertion that depends on it lives
+    /// in this one test -- two `#[test]`s flipping it would race under the
+    /// parallel test runner.
     #[test]
-    fn test_only_the_html_path_allows_raw_html() {
+    fn raw_html_is_off_unless_opted_in() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                set_allow_raw_html(false);
+            }
+        }
+        let _reset = Reset;
+
+        // Default: off on every path.
+        set_allow_raw_html(false);
+        assert!(
+            !html_options().render.r#unsafe,
+            "raw HTML must be off unless the user opted in"
+        );
+        assert!(!markdown_options().render.r#unsafe);
+        assert!(!fmt_options(FMT_WIDTH).render.r#unsafe);
+
+        let out = render_fragment("<script>alert(1)</script>\n", "base16-ocean.dark");
+        assert!(!out.contains("alert(1)"), "script must be dropped: {}", out);
+        assert!(
+            out.contains("<!-- raw HTML omitted -->"),
+            "expected comrak's omitted marker: {}",
+            out
+        );
+
+        let out = render_fragment("[x](javascript:alert(1))\n", "base16-ocean.dark");
+        assert!(
+            !out.contains("javascript:"),
+            "dangerous href must be blanked: {}",
+            out
+        );
+
+        // Opt-in: only the HTML path changes.
+        set_allow_raw_html(true);
         assert!(html_options().render.r#unsafe);
         assert!(!markdown_options().render.r#unsafe);
         assert!(!fmt_options(FMT_WIDTH).render.r#unsafe);
-    }
 
+        let out = render_fragment("<script>alert(1)</script>\n", "base16-ocean.dark");
+        assert!(
+            out.contains("<script>alert(1)</script>"),
+            "opt-in must pass raw HTML through: {}",
+            out
+        );
+    }
     #[test]
     fn test_only_the_fmt_path_wraps() {
         assert_eq!(fmt_options(FMT_WIDTH).render.width, 80);
