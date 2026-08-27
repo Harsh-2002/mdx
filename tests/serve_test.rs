@@ -50,11 +50,11 @@ fn start_serve(args: &[&str]) -> ServeProcess {
             Ok(0) | Err(_) => break,
             Ok(_) => {
                 // Lines look like: "  Serving foo.md at http://127.0.0.1:PORT"
-                if let Some(idx) = line.rfind(':') {
-                    if let Ok(p) = line[idx + 1..].trim().parse::<u16>() {
-                        port = p;
-                        break;
-                    }
+                if let Some(idx) = line.rfind(':')
+                    && let Ok(p) = line[idx + 1..].trim().parse::<u16>()
+                {
+                    port = p;
+                    break;
                 }
             }
         }
