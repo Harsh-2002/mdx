@@ -392,7 +392,12 @@ fn extract_readable(html: &str, url: &str) -> (String, Option<ArticleMeta>) {
 /// through here: htmd renders <script>/<style> children as text, so an
 /// unsanitised fallback turns a JS bundle into article prose.
 fn raw_fallback(html: &str) -> String {
-    clean_markdown(&convert_raw(&sanitize_html(html)).unwrap_or_default())
+    convert_raw(&sanitize_html(html)).unwrap_or_default()
+}
+
+/// Characters CommonMark allows before a block marker on the same line.
+fn is_block_prefix(c: char) -> bool {
+    c.is_ascii_digit() || matches!(c, ' ' | '\t' | '-' | '+' | '*' | '>' | '.' | ')')
 }
 
 fn convert_raw(html: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -409,9 +414,9 @@ fn clean_markdown(input: &str) -> String {
     let mut fence = crate::text::FenceTracker::new();
 
     for line in input.lines() {
-        let in_fence = fence.feed(line);
-
-        if in_fence {
+        // The closing delimiter belongs to the block too.
+        let was_in_fence = fence.in_fence();
+        if fence.feed(line) || was_in_fence {
             out.push_str(line);
             out.push('\n');
             consecutive_blanks = 0;
@@ -427,7 +432,6 @@ fn clean_markdown(input: &str) -> String {
         }
         consecutive_blanks = 0;
 
-        let indent_end = line.len() - line.trim_start().len();
         let mut chars = line.char_indices().peekable();
         while let Some((i, c)) = chars.next() {
             if c != '\\' {
@@ -438,18 +442,16 @@ fn clean_markdown(input: &str) -> String {
                 out.push(c);
                 continue;
             };
-            // A backslash in the line's leading run is suppressing block
-            // syntax: dropping it turns "1999\. It was" into an ordered list.
-            let leading = i <= indent_end + 6
-                && line[..i]
-                    .trim_start()
-                    .chars()
-                    .all(|c| c.is_ascii_digit() || c == '.');
+            // An escape whose whole prefix is a block prefix is suppressing
+            // block syntax: dropping it turns "1999\. It was" into an ordered
+            // list, and "- 1999\. x" into a nested one.
+            let list_marker =
+                matches!(next, '.' | ')' | '+' | '-') && line[..i].chars().all(is_block_prefix);
             let meaningful = matches!(
                 next,
                 '*' | '_' | '`' | '[' | ']' | '<' | '>' | '~' | '|' | '\\' | '#'
             );
-            if meaningful || leading {
+            if meaningful || list_marker {
                 out.push(c);
             }
             out.push(next);
@@ -748,6 +750,35 @@ mod tests {
         assert_eq!(
             yaml_escape("Caf\u{e9} \u{65e5}\u{672c}"),
             "Caf\u{e9} \u{65e5}\u{672c}"
+        );
+    }
+    #[test]
+    fn test_clean_markdown_protects_nested_list_escapes() {
+        // "- 1999\\. x" must not become a nested ordered list.
+        let out = clean_markdown("- 1999\\. nested\n");
+        assert!(out.contains("1999\\."), "got: {:?}", out);
+    }
+
+    #[test]
+    fn test_clean_markdown_drops_mid_sentence_escapes() {
+        let out = clean_markdown("foo \\. bar\n");
+        assert!(out.contains("foo . bar"), "got: {:?}", out);
+    }
+
+    #[test]
+    fn test_clean_markdown_protects_indented_and_bullet_escapes() {
+        assert!(clean_markdown("    1999\\. x\n").contains("1999\\."));
+        assert!(clean_markdown("\\- not a bullet\n").contains("\\-"));
+        assert!(clean_markdown("> 1\\) quoted\n").contains("1\\)"));
+    }
+
+    #[test]
+    fn test_clean_markdown_is_idempotent() {
+        let once = clean_markdown("1999\\. It was\n\n```\nr\"\\d+\"\n```\n");
+        assert_eq!(
+            once,
+            clean_markdown(&once),
+            "second pass must not strip more"
         );
     }
 }
