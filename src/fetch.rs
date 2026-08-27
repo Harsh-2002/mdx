@@ -11,17 +11,21 @@ enum FetchResult {
         body: String,
         server_tokens: Option<u64>,
         content_signal: Option<String>,
+        final_url: String,
     },
     /// Server returned HTML — needs local conversion.
     Html {
         body: String,
         content_signal: Option<String>,
+        final_url: String,
     },
 }
 
 fn http_agent() -> ureq::Agent {
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(30)))
+        // Without this, .call() returns Err before we can report the status.
+        .http_status_as_error(false)
         .build();
     config.into()
 }
@@ -33,6 +37,7 @@ pub fn run(args: &FetchArgs) -> Result<String, Box<dyn std::error::Error>> {
         return Err("URL must start with http:// or https://".into());
     }
 
+    eprintln!("  Fetching {}...", args.url);
     let result = fetch_content(&args.url)?;
 
     // Check Content-Signal header
@@ -41,6 +46,12 @@ pub fn run(args: &FetchArgs) -> Result<String, Box<dyn std::error::Error>> {
         FetchResult::Html { content_signal, .. } => content_signal.clone(),
     };
     check_content_signal(content_signal.as_deref());
+
+    let final_url = match &result {
+        FetchResult::Markdown { final_url, .. } | FetchResult::Html { final_url, .. } => {
+            final_url.clone()
+        }
+    };
 
     let (markdown, meta, tokens) = match result {
         FetchResult::Markdown {
@@ -57,7 +68,7 @@ pub fn run(args: &FetchArgs) -> Result<String, Box<dyn std::error::Error>> {
             let (md, meta) = if args.raw {
                 (raw_fallback(&body), None)
             } else {
-                extract_readable(&body, &args.url)
+                extract_readable(&body, &final_url)
             };
             let token_count = crate::estimate_tokens(&md);
             (md, meta, token_count)
@@ -73,11 +84,11 @@ pub fn run(args: &FetchArgs) -> Result<String, Box<dyn std::error::Error>> {
     if args.metadata {
         let token_arg = if args.tokens { Some(tokens) } else { None };
         if let Some(ref m) = meta {
-            output.push_str(&format_front_matter(m, &args.url, token_arg));
+            output.push_str(&format_front_matter(m, &final_url, token_arg));
         } else {
             output.push_str(&format_front_matter(
                 &ArticleMeta::default(),
-                &args.url,
+                &final_url,
                 token_arg,
             ));
         }
@@ -86,7 +97,18 @@ pub fn run(args: &FetchArgs) -> Result<String, Box<dyn std::error::Error>> {
     output.push_str(&markdown);
 
     if let Some(ref path) = args.output {
-        std::fs::write(path, &output)?;
+        if output.trim().is_empty() {
+            return Err(
+                format!("Extraction produced no content; refusing to write {}", path).into(),
+            );
+        }
+        if let Some(parent) = std::path::Path::new(path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Cannot create '{}': {}", parent.display(), e))?;
+        }
+        std::fs::write(path, &output).map_err(|e| format!("Cannot write '{}': {}", path, e))?;
         eprintln!("  Wrote {}", path);
     }
 
@@ -105,6 +127,12 @@ fn fetch_content(url: &str) -> Result<FetchResult, Box<dyn std::error::Error>> {
     if !(200..300).contains(&status) {
         return Err(format!("HTTP {} for {}", status, url).into());
     }
+
+    // Must be read before into_body(), which consumes the extensions holding it.
+    let final_url = {
+        use ureq::ResponseExt;
+        resp.get_uri().to_string()
+    };
 
     let content_type = resp
         .headers()
@@ -126,35 +154,81 @@ fn fetch_content(url: &str) -> Result<FetchResult, Box<dyn std::error::Error>> {
         .map(|v| v.to_string());
 
     if content_type.contains("text/markdown") {
-        let body = resp
-            .into_body()
-            .with_config()
-            .limit(MAX_BODY_SIZE)
-            .read_to_string()?;
+        let body = read_body(resp)?;
         return Ok(FetchResult::Markdown {
             body,
             server_tokens,
             content_signal,
+            final_url,
         });
     }
 
-    if !content_type.contains("text/html") && !content_type.contains("application/xhtml") {
+    // GitHub serves raw .md as text/plain, and some servers send no type at all.
+    let looks_markdown = url_path_is_markdown(url);
+    if content_type.contains("text/plain") && looks_markdown {
+        let body = read_body(resp)?;
+        return Ok(FetchResult::Markdown {
+            body,
+            server_tokens,
+            content_signal,
+            final_url,
+        });
+    }
+
+    let sniff_html = content_type.is_empty();
+    if !content_type.contains("text/html")
+        && !content_type.contains("application/xhtml")
+        && !sniff_html
+    {
         return Err(format!(
-            "URL returned unsupported content type ({}). Expected text/markdown or text/html.",
+            "URL returned unsupported content type ({}). Expected text/markdown, text/html, \
+             or text/plain for a .md URL.",
             content_type
         )
         .into());
     }
 
-    let body = resp
-        .into_body()
-        .with_config()
-        .limit(MAX_BODY_SIZE)
-        .read_to_string()?;
+    if sniff_html {
+        let body = read_body(resp)?;
+        let head = body.trim_start().to_ascii_lowercase();
+        if !head.starts_with("<!doctype") && !head.starts_with("<html") {
+            return Ok(FetchResult::Markdown {
+                body,
+                server_tokens,
+                content_signal,
+                final_url,
+            });
+        }
+        return Ok(FetchResult::Html {
+            body,
+            content_signal,
+            final_url,
+        });
+    }
+
+    let body = read_body(resp)?;
     Ok(FetchResult::Html {
         body,
         content_signal,
+        final_url,
     })
+}
+
+fn read_body(resp: ureq::http::Response<ureq::Body>) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(resp
+        .into_body()
+        .with_config()
+        .limit(MAX_BODY_SIZE)
+        // A page in a legacy encoding, or with a stray invalid byte, must not
+        // fail the whole fetch.
+        .lossy_utf8(true)
+        .read_to_string()?)
+}
+
+fn url_path_is_markdown(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".md") || lower.ends_with(".markdown")
 }
 
 /// Check Content-Signal header for ai-input=no directive.
@@ -636,5 +710,14 @@ mod tests {
             md
         );
         assert!(md.contains("App"), "real content must survive: {}", md);
+    }
+    #[test]
+    fn test_url_path_is_markdown() {
+        assert!(url_path_is_markdown("https://x/README.md"));
+        assert!(url_path_is_markdown("https://x/a.MARKDOWN"));
+        assert!(url_path_is_markdown("https://x/a.md?raw=1"));
+        assert!(url_path_is_markdown("https://x/a.md#top"));
+        assert!(!url_path_is_markdown("https://x/index.html"));
+        assert!(!url_path_is_markdown("https://x/"));
     }
 }
