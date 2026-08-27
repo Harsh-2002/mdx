@@ -234,7 +234,7 @@ pub struct ExportArgs {
     #[arg(long, value_parser = ["html", "json", "txt", "pdf", "epub"])]
     pub to: String,
 
-    /// Output file path (for pdf/epub: defaults to input filename with matching extension)
+    /// Output file path (pdf/epub default to the input name with a new extension)
     #[arg(short, long, value_hint = ValueHint::FilePath)]
     pub output: Option<String>,
 

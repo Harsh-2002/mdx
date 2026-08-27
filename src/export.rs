@@ -26,6 +26,52 @@ pub struct ExportArgs {
     pub allow_remote_render: bool,
 }
 
+/// Write `content` to `output`, or to stdout when no path was given.
+///
+/// `-o` used to be read only by the pdf and epub arms, so
+/// `mdx export --to html -o out.html f.md` exited 0 having written nothing.
+fn emit(content: &str, output: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    match output {
+        Some(path) => {
+            if let Some(parent) = std::path::Path::new(path).parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("Cannot create '{}': {}", parent.display(), e))?;
+            }
+            std::fs::write(path, content).map_err(|e| format!("Cannot write '{}': {}", path, e))?;
+            eprintln!("  Wrote {}", path);
+        }
+        None => {
+            use std::io::Write;
+            let stdout = std::io::stdout();
+            let mut w = stdout.lock();
+            // A closed pipe (`| head`) is not an error worth reporting.
+            if let Err(e) = w.write_all(content.as_bytes())
+                && e.kind() != std::io::ErrorKind::BrokenPipe
+            {
+                return Err(Box::new(e));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Derive an output path from the input by swapping its extension.
+///
+/// Uses `Path::with_extension` rather than a string replace: `f.replace(".md",
+/// ".pdf")` is global, so `notes.md.backup.md` became `notes.pdf.backup.pdf`,
+/// and a directory named `v1.markdown/` was renamed in the output path too.
+fn default_output_path(file: Option<&str>, ext: &str) -> String {
+    match file {
+        Some(f) => std::path::Path::new(f)
+            .with_extension(ext)
+            .to_string_lossy()
+            .into_owned(),
+        None => format!("output.{}", ext),
+    }
+}
+
 pub fn run(args: &ExportArgs) -> Result<(), Box<dyn std::error::Error>> {
     // Export converts a document the user named into a file they asked for, so
     // it keeps rendering raw HTML. serve and publish default the other way and
@@ -48,42 +94,32 @@ pub fn run(args: &ExportArgs) -> Result<(), Box<dyn std::error::Error>> {
                 title,
                 "",
             );
-            print!("{}", html);
+            emit(&html, args.output.as_deref())?;
         }
         "json" => {
             let arena = typed_arena::Arena::new();
             let root = parse_markdown(&arena, &content);
             let json = ast_to_json(root, 0);
-            println!("{}", json);
+            emit(&format!("{}\n", json), args.output.as_deref())?;
         }
         "txt" => {
             let arena = typed_arena::Arena::new();
             let root = parse_markdown(&arena, &content);
             let text = extract_plain_text(root);
-            print!("{}", text);
+            emit(&text, args.output.as_deref())?;
         }
         "pdf" => {
             let output_path = args
                 .output
                 .clone()
-                .or_else(|| {
-                    args.file
-                        .as_ref()
-                        .map(|f| f.replace(".md", ".pdf").replace(".markdown", ".pdf"))
-                })
-                .unwrap_or_else(|| "output.pdf".to_string());
+                .unwrap_or_else(|| default_output_path(args.file.as_deref(), "pdf"));
             export_pdf(&content, &output_path, args.allow_remote_render)?;
         }
         "epub" => {
             let output_path = args
                 .output
                 .clone()
-                .or_else(|| {
-                    args.file
-                        .as_ref()
-                        .map(|f| f.replace(".md", ".epub").replace(".markdown", ".epub"))
-                })
-                .unwrap_or_else(|| "output.epub".to_string());
+                .unwrap_or_else(|| default_output_path(args.file.as_deref(), "epub"));
             export_epub(&content, &output_path, args.file.as_deref())?;
         }
         other => {
@@ -1621,5 +1657,44 @@ mod tests {
             !ALLOW_REMOTE_RENDER.load(Ordering::Relaxed),
             "diagram source must never be uploaded unless --allow-remote-render set it"
         );
+    }
+}
+
+#[cfg(test)]
+mod output_path_tests {
+    use super::*;
+
+    #[test]
+    fn test_default_output_path_swaps_extension() {
+        assert_eq!(default_output_path(Some("README.md"), "pdf"), "README.pdf");
+        assert_eq!(
+            default_output_path(Some("docs/a.markdown"), "epub"),
+            "docs/a.epub"
+        );
+        assert_eq!(default_output_path(None, "pdf"), "output.pdf");
+    }
+
+    #[test]
+    fn test_default_output_path_only_touches_the_last_extension() {
+        // `f.replace(".md", ".pdf")` was global: this produced
+        // "notes.pdf.backup.pdf".
+        assert_eq!(
+            default_output_path(Some("notes.md.backup.md"), "pdf"),
+            "notes.md.backup.pdf"
+        );
+    }
+
+    #[test]
+    fn test_default_output_path_leaves_directories_alone() {
+        // A directory whose name contains ".markdown" was rewritten too.
+        assert_eq!(
+            default_output_path(Some("v1.markdown/post.md"), "pdf"),
+            "v1.markdown/post.pdf"
+        );
+    }
+
+    #[test]
+    fn test_default_output_path_handles_no_extension() {
+        assert_eq!(default_output_path(Some("LICENSE"), "pdf"), "LICENSE.pdf");
     }
 }

@@ -147,7 +147,7 @@ mdx fetch https://example.com | llm        # pipe to LLM
 
 ### `mdx export` — Format conversion
 
-Export markdown to other formats. PDF and EPUB write to a file (defaults to input filename with new extension). HTML, JSON, and TXT print to stdout.
+Export markdown to other formats. `-o` writes to a file in every format; without it, HTML, JSON and TXT print to stdout while PDF and EPUB default to the input name with a new extension.
 
 ```bash
 mdx export --to html README.md              # standalone HTML page
