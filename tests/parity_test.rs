@@ -246,6 +246,46 @@ const MATRIX: &[Row] = &[
         txt: Full,
         json: Full,
     },
+    Row {
+        fixture: "description_list",
+        probes: &[&["term one"], &["the definition text"]],
+        term: Full,
+        html: Full,
+        txt: Full,
+        json: Full,
+    },
+    Row {
+        fixture: "superscript",
+        probes: &[&["superscript probe"]],
+        term: OkWith(&[&["\u{b2}"]]),
+        html: Full,
+        txt: Full,
+        json: Full,
+    },
+    Row {
+        fixture: "highlight",
+        probes: &[&["highlighted probe"]],
+        term: Full,
+        html: Full,
+        txt: Full,
+        json: Full,
+    },
+    Row {
+        fixture: "wikilink",
+        probes: &[&["wikilink probe"], &["targetpage"]],
+        term: Full,
+        html: Full,
+        txt: Full,
+        json: Full,
+    },
+    Row {
+        fixture: "inline_footnote",
+        probes: &[&["text probe"], &["inline note probe"]],
+        term: Full,
+        html: Full,
+        txt: Full,
+        json: Full,
+    },
 ];
 
 fn fixture_path(name: &str) -> std::path::PathBuf {

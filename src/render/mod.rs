@@ -180,6 +180,8 @@ pub struct RenderContext<'a> {
     pub syntax_theme: String,
     pub plain: bool,
     pub strikethrough_fallback: bool,
+    pub highlight_fallback: bool,
+    pub superscript_unicode: bool,
     pub image_base_dir: Option<PathBuf>,
     pub skip_image_text: bool,
 }
@@ -242,6 +244,8 @@ impl<'a> RenderContext<'a> {
             syntax_theme,
             plain,
             strikethrough_fallback: false,
+            highlight_fallback: false,
+            superscript_unicode: false,
             image_base_dir: None,
             skip_image_text: false,
         }
@@ -323,9 +327,9 @@ pub fn render<'a, W: Write>(
     Ok(())
 }
 
-fn handle_node_start<W: Write>(
+fn handle_node_start<'a, W: Write>(
     w: &mut W,
-    node: &AstNode<'_>,
+    node: &'a AstNode<'a>,
     ctx: &mut RenderContext<'_>,
 ) -> std::io::Result<()> {
     let val = &node.data.borrow().value;
@@ -338,7 +342,12 @@ fn handle_node_start<W: Write>(
             block::start_paragraph(w, ctx)?;
         }
         NodeValue::Text(text) => {
-            inline::render_text(w, ctx, text)?;
+            if ctx.superscript_unicode {
+                let sup = inline::superscript_text(text);
+                inline::render_text(w, ctx, &sup)?;
+            } else {
+                inline::render_text(w, ctx, text)?;
+            }
         }
         NodeValue::SoftBreak => {
             inline::render_soft_break(w, ctx)?;
@@ -357,6 +366,27 @@ fn handle_node_start<W: Write>(
         }
         NodeValue::Strikethrough => {
             inline::start_strikethrough(ctx);
+        }
+        NodeValue::Highlight => {
+            inline::start_highlight(ctx);
+        }
+        NodeValue::Superscript => {
+            let text = crate::parse::inline_text(node, crate::parse::CodeStyle::Bare);
+            ctx.superscript_unicode = ctx.term.unicode && inline::superscript_is_renderable(&text);
+            inline::start_superscript(ctx);
+        }
+        NodeValue::WikiLink(link) => {
+            inline::start_link(ctx, &link.url);
+        }
+        NodeValue::DescriptionList => {
+            block::start_list(ctx, ListType::Bullet, 1, true);
+        }
+        NodeValue::DescriptionItem(_) => {}
+        NodeValue::DescriptionTerm => {
+            block::start_description_term(w, ctx)?;
+        }
+        NodeValue::DescriptionDetails => {
+            block::start_description_details(ctx);
         }
         NodeValue::Link(link) => {
             inline::start_link(ctx, &link.url);
@@ -418,9 +448,9 @@ fn handle_node_start<W: Write>(
     Ok(())
 }
 
-fn handle_node_end<W: Write>(
+fn handle_node_end<'a, W: Write>(
     w: &mut W,
-    node: &AstNode<'_>,
+    node: &'a AstNode<'a>,
     ctx: &mut RenderContext<'_>,
 ) -> std::io::Result<()> {
     let val = &node.data.borrow().value;
@@ -440,6 +470,26 @@ fn handle_node_end<W: Write>(
         }
         NodeValue::Strikethrough => {
             inline::end_strikethrough(ctx);
+        }
+        NodeValue::Highlight => {
+            inline::end_highlight(ctx);
+        }
+        NodeValue::Superscript => {
+            inline::end_superscript(ctx);
+            ctx.superscript_unicode = false;
+        }
+        NodeValue::WikiLink(link) => {
+            inline::end_link(w, ctx, &link.url)?;
+        }
+        NodeValue::DescriptionList => {
+            block::end_list(w, ctx)?;
+        }
+        NodeValue::DescriptionItem(_) => {}
+        NodeValue::DescriptionTerm => {
+            block::end_description_term(ctx);
+        }
+        NodeValue::DescriptionDetails => {
+            block::end_description_details(ctx);
         }
         NodeValue::Link(link) => {
             inline::end_link(w, ctx, &link.url)?;

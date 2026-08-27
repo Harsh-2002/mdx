@@ -929,6 +929,20 @@ fn render_block<'a>(
             }
             doc.push(elements::Break::new(0.8_f32));
         }
+        NodeValue::DescriptionTerm => {
+            drop(data);
+            let mut p = elements::Paragraph::default();
+            let base = style::Style::new().with_font_size(11).bold();
+            collect_inline(&mut p, node, base, mono_font);
+            doc.push(p);
+        }
+        NodeValue::DescriptionDetails => {
+            drop(data);
+            for child in node.children() {
+                render_block(doc, child, temp_files, mono_font, first_h1_seen);
+            }
+            doc.push(elements::Break::new(0.3_f32));
+        }
         NodeValue::Paragraph => {
             drop(data);
             let mut p = elements::Paragraph::default();
@@ -1739,6 +1753,13 @@ fn ast_to_json<'a>(node: &'a AstNode<'a>, depth: usize) -> String {
         NodeValue::FootnoteReference(_) => "footnote_reference",
         NodeValue::Math(_) => "math",
         NodeValue::TaskItem(_) => "task_item",
+        NodeValue::Highlight => "highlight",
+        NodeValue::Superscript => "superscript",
+        NodeValue::WikiLink(_) => "wikilink",
+        NodeValue::DescriptionList => "description_list",
+        NodeValue::DescriptionItem(_) => "description_item",
+        NodeValue::DescriptionTerm => "description_term",
+        NodeValue::DescriptionDetails => "description_details",
         NodeValue::Alert(_) => "alert",
         _ => "other",
     };
@@ -1784,6 +1805,9 @@ fn ast_to_json<'a>(node: &'a AstNode<'a>, depth: usize) -> String {
         }
         NodeValue::TaskItem(t) => {
             props.push(format!("{}\"checked\": {}", indent1, t.symbol.is_some()));
+        }
+        NodeValue::WikiLink(link) => {
+            props.push(format!("{}\"url\": {}", indent1, json_escape(&link.url)));
         }
         NodeValue::CodeBlock(cb) => {
             props.push(format!("{}\"info\": {}", indent1, json_escape(&cb.info)));
@@ -1874,6 +1898,12 @@ fn extract_plain_text<'a>(root: &'a AstNode<'a>) -> String {
                     NodeValue::TableRow(_) => {
                         text.push('\n');
                         last_was_block = true;
+                    }
+                    NodeValue::WikiLink(link) if !link.url.is_empty() => {
+                        text.push_str(" (");
+                        text.push_str(&link.url);
+                        text.push(')');
+                        last_was_block = false;
                     }
                     _ => {}
                 }

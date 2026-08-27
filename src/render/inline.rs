@@ -393,3 +393,76 @@ impl SegmentCharIter {
         Style::default()
     }
 }
+
+fn push_marker(ctx: &mut RenderContext<'_>, text: &str) {
+    let seg = StyledSegment {
+        text: text.to_string(),
+        style: ctx.current_style(),
+    };
+    if ctx.paragraph_buf.is_some() {
+        ctx.paragraph_segments.push(seg);
+    }
+}
+
+pub fn start_highlight(ctx: &mut RenderContext<'_>) {
+    use crate::terminal::ColorLevel;
+    if ctx.color_level() <= ColorLevel::None {
+        push_marker(ctx, "==");
+        ctx.highlight_fallback = true;
+    } else {
+        let mut style = ctx.theme.inline_code.clone();
+        style.bold = true;
+        ctx.style_stack.push(style);
+    }
+}
+
+pub fn end_highlight(ctx: &mut RenderContext<'_>) {
+    if ctx.highlight_fallback {
+        push_marker(ctx, "==");
+        ctx.highlight_fallback = false;
+    } else {
+        ctx.style_stack.pop();
+    }
+}
+
+/// U+00B2/U+00B3/U+00B9 are the odd ones out; the rest live in U+2070.
+fn superscript_char(c: char) -> Option<char> {
+    Some(match c {
+        '0' => '\u{2070}',
+        '1' => '\u{00b9}',
+        '2' => '\u{00b2}',
+        '3' => '\u{00b3}',
+        '4'..='9' => char::from_u32(0x2074 + (c as u32 - '4' as u32))?,
+        '+' => '\u{207a}',
+        '-' => '\u{207b}',
+        '=' => '\u{207c}',
+        '(' => '\u{207d}',
+        ')' => '\u{207e}',
+        'n' => '\u{207f}',
+        'i' => '\u{2071}',
+        _ => return None,
+    })
+}
+
+/// True when every character has a Unicode superscript form.
+pub fn superscript_is_renderable(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| superscript_char(c).is_some())
+}
+
+pub fn superscript_text(text: &str) -> String {
+    text.chars()
+        .map(|c| superscript_char(c).unwrap_or(c))
+        .collect()
+}
+
+pub fn start_superscript(ctx: &mut RenderContext<'_>) {
+    if !ctx.superscript_unicode {
+        push_marker(ctx, "^");
+    }
+}
+
+pub fn end_superscript(ctx: &mut RenderContext<'_>) {
+    if !ctx.superscript_unicode {
+        push_marker(ctx, "^");
+    }
+}

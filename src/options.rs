@@ -44,10 +44,25 @@ pub fn markdown_options() -> Options<'static> {
     options.extension.footnotes = true;
     options.extension.alerts = true;
 
+    // GFM output safety; inert for the terminal, matters for serve/publish.
+    options.extension.tagfilter = true;
+
+    // Docs extensions. Each needs a render arm in every target -- the terminal
+    // renderer's `_ => {}` means an extension without one renders as nothing.
+    options.extension.description_lists = true;
+    options.extension.inline_footnotes = true;
+    options.extension.highlight = true;
+    options.extension.superscript = true;
+    options.extension.wikilinks_title_after_pipe = true;
+
     // mdx extras.
     options.extension.front_matter_delimiter = Some("---".to_owned());
     options.extension.math_dollars = true;
     options.extension.math_code = true;
+
+    options.render.gfm_quirks = true;
+    options.parse.relaxed_tasklist_matching = true;
+    options.parse.tasklist_in_table = true;
 
     options
 }
@@ -235,10 +250,18 @@ mod tests {
         assert!(!markdown_options().render.r#unsafe);
         assert!(!fmt_options(FMT_WIDTH).render.r#unsafe);
 
+        // GFM's tagfilter stays on: --unsafe-html renders raw HTML the way
+        // GitHub does, so <div>/<details> pass but <script> is neutralised.
+        let out = render_fragment("<div class=\"x\">kept</div>\n", "base16-ocean.dark");
+        assert!(
+            out.contains("<div class=\"x\">"),
+            "opt-in must pass ordinary raw HTML through: {}",
+            out
+        );
         let out = render_fragment("<script>alert(1)</script>\n", "base16-ocean.dark");
         assert!(
-            out.contains("<script>alert(1)</script>"),
-            "opt-in must pass raw HTML through: {}",
+            out.contains("&lt;script>"),
+            "tagfilter must neutralise script even with the opt-in: {}",
             out
         );
     }

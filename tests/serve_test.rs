@@ -1129,9 +1129,16 @@ fn test_serve_unsafe_html_renders_raw_html() {
 
     let (status, raw) = http_get(&srv.url("/raw"));
     assert_eq!(status, 200);
+    // GFM's tagfilter stays on, so --unsafe-html renders raw HTML the way
+    // GitHub does: ordinary tags pass, script is neutralised.
     assert!(
-        raw.contains("<script>alert('pwned')</script>"),
-        "--unsafe-html should pass raw HTML through, got: {}",
+        raw.contains("<img src=x onerror=alert(1)>"),
+        "--unsafe-html should pass ordinary raw HTML through, got: {}",
+        raw
+    );
+    assert!(
+        raw.contains("&lt;script>"),
+        "tagfilter should neutralise script even with --unsafe-html, got: {}",
         raw
     );
     assert!(
