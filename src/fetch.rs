@@ -55,8 +55,7 @@ pub fn run(args: &FetchArgs) -> Result<String, Box<dyn std::error::Error>> {
         }
         FetchResult::Html { body, .. } => {
             let (md, meta) = if args.raw {
-                let sanitized = sanitize_html(&body);
-                (convert_raw(&sanitized)?, None)
+                (raw_fallback(&body), None)
             } else {
                 extract_readable(&body, &args.url)
             };
@@ -180,7 +179,7 @@ fn sanitize_html(html: &str) -> String {
     for tag in &["script", "style", "noscript", "iframe", "object", "embed"] {
         // Remove both opening+content+closing and self-closing variants
         loop {
-            let lower = result.to_lowercase();
+            let lower = result.to_ascii_lowercase();
             let open = format!("<{}", tag);
             if let Some(start) = lower.find(&open) {
                 let close_tag = format!("</{}>", tag);
@@ -204,7 +203,7 @@ fn sanitize_html(html: &str) -> String {
     // Neutralize dangerous URL schemes in href and src attributes
     for attr in &["href", "src"] {
         loop {
-            let lower = result.to_lowercase();
+            let lower = result.to_ascii_lowercase();
             let mut found = false;
             for scheme in &["javascript:", "data:", "vbscript:"] {
                 // Look for attr="scheme..." or attr='scheme...'
@@ -262,7 +261,7 @@ fn extract_readable(html: &str, url: &str) -> (String, Option<ArticleMeta>) {
                     eprintln!(
                         "  Warning: readability returned empty content, falling back to raw conversion"
                     );
-                    let md = clean_markdown(&convert_raw(html).unwrap_or_default());
+                    let md = raw_fallback(html);
                     return (md, None);
                 }
                 let meta = ArticleMeta {
@@ -290,7 +289,7 @@ fn extract_readable(html: &str, url: &str) -> (String, Option<ArticleMeta>) {
                     "  Warning: readability extraction failed ({}), falling back to raw conversion",
                     e
                 );
-                let md = clean_markdown(&convert_raw(html).unwrap_or_default());
+                let md = raw_fallback(html);
                 (md, None)
             }
         },
@@ -299,10 +298,17 @@ fn extract_readable(html: &str, url: &str) -> (String, Option<ArticleMeta>) {
                 "  Warning: readability init failed ({}), falling back to raw conversion",
                 e
             );
-            let md = clean_markdown(&convert_raw(html).unwrap_or_default());
+            let md = raw_fallback(html);
             (md, None)
         }
     }
+}
+
+/// Sanitise, then convert. Every path that hands raw page HTML to htmd must go
+/// through here: htmd renders <script>/<style> children as text, so an
+/// unsanitised fallback turns a JS bundle into article prose.
+fn raw_fallback(html: &str) -> String {
+    clean_markdown(&convert_raw(&sanitize_html(html)).unwrap_or_default())
 }
 
 fn convert_raw(html: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -316,7 +322,18 @@ fn convert_raw(html: &str) -> Result<String, Box<dyn std::error::Error>> {
 fn clean_markdown(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut consecutive_blanks = 0u32;
+    let mut fence = crate::text::FenceTracker::new();
+
     for line in input.lines() {
+        let in_fence = fence.feed(line);
+
+        if in_fence {
+            out.push_str(line);
+            out.push('\n');
+            consecutive_blanks = 0;
+            continue;
+        }
+
         if line.trim().is_empty() {
             consecutive_blanks += 1;
             if consecutive_blanks <= 2 {
@@ -326,34 +343,37 @@ fn clean_markdown(input: &str) -> String {
         }
         consecutive_blanks = 0;
 
-        let mut chars = line.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '\\' {
-                if let Some(&next) = chars.peek() {
-                    // Keep escapes that are meaningful in markdown
-                    if matches!(
-                        next,
-                        '*' | '_' | '`' | '[' | ']' | '<' | '>' | '~' | '|' | '\\' | '#'
-                    ) {
-                        out.push(c);
-                        out.push(next);
-                        chars.next();
-                    } else {
-                        // Drop the backslash, keep the character
-                        out.push(next);
-                        chars.next();
-                    }
-                } else {
-                    out.push(c);
-                }
-            } else {
+        let indent_end = line.len() - line.trim_start().len();
+        let mut chars = line.char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            let Some(&(_, next)) = chars.peek() else {
+                out.push(c);
+                continue;
+            };
+            // A backslash in the line's leading run is suppressing block
+            // syntax: dropping it turns "1999\. It was" into an ordered list.
+            let leading = i <= indent_end + 6
+                && line[..i]
+                    .trim_start()
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c == '.');
+            let meaningful = matches!(
+                next,
+                '*' | '_' | '`' | '[' | ']' | '<' | '>' | '~' | '|' | '\\' | '#'
+            );
+            if meaningful || leading {
                 out.push(c);
             }
+            out.push(next);
+            chars.next();
         }
         out.push('\n');
     }
 
-    // Trim trailing whitespace
     let trimmed = out.trim_end();
     let mut result = trimmed.to_string();
     result.push('\n');
@@ -558,5 +578,63 @@ mod tests {
         assert!(fm.contains("image: \"https://example.com/img.jpg\""));
         assert!(fm.contains("url: \"https://example.com/page\""));
         assert!(fm.contains("site_name: \"Example Site\""));
+    }
+    #[test]
+    fn test_clean_markdown_keeps_backslashes_in_code_fences() {
+        let input = "```\nr\"\\d+\\s*\"\n```\n";
+        let out = clean_markdown(input);
+        assert!(out.contains("\\d+"), "regex escapes must survive: {}", out);
+        assert!(out.contains("\\s*"), "regex escapes must survive: {}", out);
+    }
+
+    #[test]
+    fn test_clean_markdown_keeps_blank_lines_in_fences() {
+        let input = "```\na\n\n\n\nb\n```\n";
+        let out = clean_markdown(input);
+        assert!(
+            out.contains("a\n\n\n\nb"),
+            "diagram spacing must survive: {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn test_clean_markdown_does_not_manufacture_a_list() {
+        let out = clean_markdown("1999\\. It was a good year.\n");
+        assert!(
+            out.starts_with("1999\\."),
+            "leading escape must be kept or the line becomes an ol: {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn test_clean_markdown_still_drops_pointless_escapes() {
+        let out = clean_markdown("Some text with escaped \\. period.\n");
+        assert!(out.contains("escaped . period"), "got: {:?}", out);
+    }
+
+    #[test]
+    fn test_sanitize_html_is_ascii_offset_safe() {
+        // U+0130 grows a byte when lowercased; offsets found in a lowercased
+        // copy used to be applied to the original.
+        let html = "<p>\u{130}stanbul</p><script>evil()</script><p>after</p>";
+        let out = sanitize_html(html);
+        assert!(!out.to_lowercase().contains("<script"));
+        assert!(out.contains("stanbul"), "content must survive: {}", out);
+        assert!(out.contains("after"), "content must survive: {}", out);
+    }
+
+    #[test]
+    fn test_raw_fallback_strips_scripts() {
+        let html = "<html><body><div id=root>App</div>\
+                    <script>var SECRET='sk-1';</script></body></html>";
+        let md = raw_fallback(html);
+        assert!(
+            !md.contains("SECRET"),
+            "script body must not become prose: {}",
+            md
+        );
+        assert!(md.contains("App"), "real content must survive: {}", md);
     }
 }
