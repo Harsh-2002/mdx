@@ -61,12 +61,15 @@ pub fn run(args: &FetchArgs) -> Result<String, Box<dyn std::error::Error>> {
         } => {
             eprintln!("  Server provided markdown directly");
             let token_count = server_tokens.unwrap_or_else(|| crate::estimate_tokens(&body));
-            let meta = extract_front_matter_meta(&body);
+            let meta = article_meta_from_front_matter(&body);
+            // Strip it, or --metadata emits a second block and comrak reads the
+            // first one only.
+            let body = crate::frontmatter::strip(&body).to_string();
             (body, meta, token_count)
         }
         FetchResult::Html { body, .. } => {
             let (md, meta) = if args.raw {
-                (raw_fallback(&body), None)
+                (raw_fallback(&body), extract_meta_only(&body, &final_url))
             } else {
                 extract_readable(&body, &final_url)
             };
@@ -321,6 +324,13 @@ struct ArticleMeta {
     site_name: Option<String>,
 }
 
+/// Metadata without the article body, for --raw. dom_smoothie already parses
+/// OpenGraph, Twitter and JSON-LD, so this needs no parser of its own.
+fn extract_meta_only(html: &str, url: &str) -> Option<ArticleMeta> {
+    let (_, meta) = extract_readable(html, url);
+    meta
+}
+
 fn extract_readable(html: &str, url: &str) -> (String, Option<ArticleMeta>) {
     let cfg = dom_smoothie::Config {
         text_mode: dom_smoothie::TextMode::Markdown,
@@ -456,11 +466,24 @@ fn clean_markdown(input: &str) -> String {
 
 /// Escape a string value for safe embedding in a YAML double-quoted string.
 fn yaml_escape(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            // A crafted <title> otherwise writes raw ESC/BEL into the file, and
+            // `cat` then executes them.
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\x{:02x}", c as u32))
+            }
+            '\u{85}' | '\u{2028}' | '\u{2029}' => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn format_front_matter(meta: &ArticleMeta, url: &str, tokens: Option<u64>) -> String {
@@ -494,42 +517,22 @@ fn format_front_matter(meta: &ArticleMeta, url: &str, tokens: Option<u64>) -> St
     fm
 }
 
-/// Parse YAML front matter from server-provided markdown into ArticleMeta.
-fn extract_front_matter_meta(markdown: &str) -> Option<ArticleMeta> {
-    let trimmed = markdown.trim_start();
-    if !trimmed.starts_with("---") {
+/// Shared front-matter parser, so a document yields the same title here as it
+/// does in publish and search.
+fn article_meta_from_front_matter(markdown: &str) -> Option<ArticleMeta> {
+    if !markdown.trim_start().starts_with("---") {
         return None;
     }
-
-    // Find the closing ---
-    let after_open = &trimmed[3..];
-    let after_open = after_open.trim_start_matches(['\r', '\n']);
-    let close_pos = after_open.find("\n---")?;
-    let front_matter = &after_open[..close_pos];
-
-    let mut meta = ArticleMeta::default();
-    for line in front_matter.lines() {
-        let line = line.trim();
-        if let Some((key, val)) = line.split_once(':') {
-            let key = key.trim();
-            let val = val.trim().trim_matches('"');
-            if val.is_empty() {
-                continue;
-            }
-            match key {
-                "title" => meta.title = Some(val.to_string()),
-                "author" => meta.byline = Some(val.to_string()),
-                "date" => meta.published_time = Some(val.to_string()),
-                "excerpt" => meta.excerpt = Some(val.to_string()),
-                "image" => meta.image = Some(val.to_string()),
-                "url" => meta.url = Some(val.to_string()),
-                "site_name" => meta.site_name = Some(val.to_string()),
-                _ => {}
-            }
-        }
-    }
-
-    Some(meta)
+    let fm = crate::frontmatter::parse(markdown);
+    Some(ArticleMeta {
+        title: fm.title,
+        byline: fm.author,
+        published_time: fm.date,
+        excerpt: fm.excerpt,
+        image: fm.image,
+        site_name: fm.site_name,
+        url: fm.url,
+    })
 }
 
 #[cfg(test)]
@@ -571,9 +574,9 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_front_matter_meta() {
+    fn test_article_meta_from_front_matter() {
         let md = "---\ntitle: \"My Page\"\nauthor: \"Jane\"\nimage: \"https://example.com/img.png\"\nsite_name: \"Example\"\n---\n\n# Content";
-        let meta = extract_front_matter_meta(md).unwrap();
+        let meta = article_meta_from_front_matter(md).unwrap();
         assert_eq!(meta.title.as_deref(), Some("My Page"));
         assert_eq!(meta.byline.as_deref(), Some("Jane"));
         assert_eq!(meta.image.as_deref(), Some("https://example.com/img.png"));
@@ -581,9 +584,9 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_front_matter_meta_none() {
+    fn test_article_meta_from_front_matter_none() {
         let md = "# No front matter\n\nJust content.";
-        assert!(extract_front_matter_meta(md).is_none());
+        assert!(article_meta_from_front_matter(md).is_none());
     }
 
     #[test]
@@ -719,5 +722,32 @@ mod tests {
         assert!(url_path_is_markdown("https://x/a.md#top"));
         assert!(!url_path_is_markdown("https://x/index.html"));
         assert!(!url_path_is_markdown("https://x/"));
+    }
+    #[test]
+    fn test_yaml_escape_neutralises_control_characters() {
+        let out = yaml_escape("a\u{1b}[31mb\u{7}c");
+        assert!(
+            !out.contains('\u{1b}'),
+            "ESC must not reach the file: {}",
+            out
+        );
+        assert!(
+            !out.contains('\u{7}'),
+            "BEL must not reach the file: {}",
+            out
+        );
+        assert!(
+            out.contains("\\x1b") && out.contains("\\x07"),
+            "got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn test_yaml_escape_keeps_ordinary_text() {
+        assert_eq!(
+            yaml_escape("Caf\u{e9} \u{65e5}\u{672c}"),
+            "Caf\u{e9} \u{65e5}\u{672c}"
+        );
     }
 }
