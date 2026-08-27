@@ -78,7 +78,7 @@ const MATRIX: &[Row] = &[
         probes: &[&["probe link"], &["example.com/probe"]],
         term: Full,
         html: Full,
-        txt: Gap("txt keeps the label, drops the URL"),
+        txt: Full,
         json: Full,
     },
     Row {
@@ -158,7 +158,7 @@ const MATRIX: &[Row] = &[
         probes: &[&["x"]],
         term: Full,
         html: Full,
-        txt: Gap("txt has no Math arm; the expression is deleted"),
+        txt: Full,
         json: Full,
     },
     Row {
@@ -168,16 +168,16 @@ const MATRIX: &[Row] = &[
         // to render in the browser. Both are correct, and different.
         term: OkWith(&[&["\u{3b1}"]]),
         html: Full,
-        txt: Gap("txt has no Math arm; the expression is deleted"),
-        json: Gap("ast_to_json emits type \"math\" with no literal"),
+        txt: Full,
+        json: Full,
     },
     Row {
         fixture: "math_frac",
         probes: &[&["frac"]],
         term: Gap("render/math.rs deletes \\frac, leaving {a}{b}"),
         html: Full,
-        txt: Gap("txt has no Math arm; the expression is deleted"),
-        json: Gap("ast_to_json emits type \"math\" with no literal"),
+        txt: Full,
+        json: Full,
     },
     Row {
         fixture: "mermaid",
@@ -192,8 +192,8 @@ const MATRIX: &[Row] = &[
         probes: &[&["html probe"]],
         term: Full,
         html: Full,
-        txt: Gap("extract_plain_text has no HtmlBlock arm"),
-        json: Gap("ast_to_json keeps the node type, drops the literal"),
+        txt: Full,
+        json: Full,
     },
     Row {
         fixture: "thematic_break",

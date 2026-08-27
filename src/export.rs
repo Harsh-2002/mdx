@@ -1738,6 +1738,7 @@ fn ast_to_json<'a>(node: &'a AstNode<'a>, depth: usize) -> String {
         NodeValue::FootnoteDefinition(_) => "footnote_definition",
         NodeValue::FootnoteReference(_) => "footnote_reference",
         NodeValue::Math(_) => "math",
+        NodeValue::TaskItem(_) => "task_item",
         NodeValue::Alert(_) => "alert",
         _ => "other",
     };
@@ -1748,6 +1749,41 @@ fn ast_to_json<'a>(node: &'a AstNode<'a>, depth: usize) -> String {
         NodeValue::Text(t) => props.push(format!("{}\"value\": {}", indent1, json_escape(t))),
         NodeValue::Code(c) => {
             props.push(format!("{}\"value\": {}", indent1, json_escape(&c.literal)))
+        }
+        NodeValue::Math(m) => {
+            props.push(format!(
+                "{}\"literal\": {}",
+                indent1,
+                json_escape(&m.literal)
+            ));
+            props.push(format!("{}\"display\": {}", indent1, m.display_math));
+            props.push(format!("{}\"dollar\": {}", indent1, m.dollar_math));
+        }
+        NodeValue::HtmlBlock(hb) => {
+            props.push(format!(
+                "{}\"literal\": {}",
+                indent1,
+                json_escape(&hb.literal)
+            ));
+        }
+        NodeValue::HtmlInline(h) => {
+            props.push(format!("{}\"literal\": {}", indent1, json_escape(h)));
+        }
+        NodeValue::Alert(a) => {
+            props.push(format!(
+                "{}\"alert_type\": {}",
+                indent1,
+                json_escape(&format!("{:?}", a.alert_type))
+            ));
+        }
+        NodeValue::FootnoteDefinition(f) => {
+            props.push(format!("{}\"name\": {}", indent1, json_escape(&f.name)));
+        }
+        NodeValue::FootnoteReference(f) => {
+            props.push(format!("{}\"name\": {}", indent1, json_escape(&f.name)));
+        }
+        NodeValue::TaskItem(t) => {
+            props.push(format!("{}\"checked\": {}", indent1, t.symbol.is_some()));
         }
         NodeValue::CodeBlock(cb) => {
             props.push(format!("{}\"info\": {}", indent1, json_escape(&cb.info)));
@@ -1817,10 +1853,27 @@ fn json_escape(s: &str) -> String {
 }
 
 fn extract_plain_text<'a>(root: &'a AstNode<'a>) -> String {
+    use comrak::arena_tree::NodeEdge;
+
     let mut text = String::new();
     let mut last_was_block = false;
 
-    for node in root.descendants() {
+    for edge in root.traverse() {
+        let node = match edge {
+            NodeEdge::Start(n) => n,
+            // A link's target is only useful after its label has been emitted.
+            NodeEdge::End(n) => {
+                if let NodeValue::Link(link) = &n.data.borrow().value
+                    && !link.url.is_empty()
+                {
+                    text.push_str(" (");
+                    text.push_str(&link.url);
+                    text.push(')');
+                    last_was_block = false;
+                }
+                continue;
+            }
+        };
         let data = node.data.borrow();
         match &data.value {
             NodeValue::Text(t) => {
@@ -1836,6 +1889,21 @@ fn extract_plain_text<'a>(root: &'a AstNode<'a>) -> String {
                     text.push('\n');
                 }
                 text.push_str(&cb.literal);
+                last_was_block = true;
+            }
+            NodeValue::Math(m) => {
+                text.push_str(&m.literal);
+                last_was_block = false;
+            }
+            NodeValue::HtmlInline(h) => {
+                text.push_str(h);
+                last_was_block = false;
+            }
+            NodeValue::HtmlBlock(hb) => {
+                if !text.is_empty() && !text.ends_with('\n') {
+                    text.push_str("\n\n");
+                }
+                text.push_str(hb.literal.trim_end());
                 last_was_block = true;
             }
             NodeValue::SoftBreak | NodeValue::LineBreak => {
