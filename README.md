@@ -1,6 +1,6 @@
 # mdx
 
-A fast terminal markdown renderer and toolchain built in Rust. Renders markdown with syntax highlighting, tables, and images — directly in your terminal. In browser preview mode (`mdx serve`), also supports math (KaTeX) and mermaid diagrams. Includes a formatter, linter, diff viewer, full-text search, format converter, web page fetcher, and static site generator.
+A fast terminal markdown renderer and toolchain built in Rust. Renders markdown with syntax highlighting, tables, and images — directly in your terminal, with math rendered as Unicode. In browser preview mode (`mdx serve`), math is typeset with KaTeX and mermaid diagrams render as interactive SVG. Includes a formatter, linter, diff viewer, full-text search, format converter, web page fetcher, and static site generator.
 
 ## Install
 
@@ -16,7 +16,7 @@ curl -fsSL https://raw.githubusercontent.com/Harsh-2002/mdx/main/install.sh | sh
 irm https://raw.githubusercontent.com/Harsh-2002/mdx/main/install.ps1 | iex
 ```
 
-Installs the binary and sets up shell completions automatically.
+Installs the binary, and sets up shell completions for bash, zsh and fish. Other shells are skipped.
 
 **From source (all platforms):**
 
@@ -152,12 +152,22 @@ mdx fetch -o article.md https://example.com  # save to file
 mdx fetch https://example.com | llm        # pipe to LLM
 ```
 
+| Flag | Description |
+|------|-------------|
+| `-o, --output <FILE>` | Write to a file instead of stdout |
+| `--raw` | Convert the whole page, skipping readability extraction |
+| `--metadata` | Prepend YAML front matter (title, author, date, source) |
+| `--tokens` | Print an estimated token count to stderr |
+| `-p, --pager` | Page the rendered output |
+
+**`mdx fetch <url>` and `mdx <url>` are different.** `fetch` downloads a web *page* and extracts the article; `mdx <url>` expects the URL to serve a markdown file and renders it as-is.
+
 ### `mdx export` — Format conversion
 
-Export markdown to other formats. `-o` writes to a file in every format; without it, HTML, JSON and TXT print to stdout while PDF and EPUB default to the input name with a new extension.
+Export markdown to other formats. HTML output is a single file, but math and mermaid load KaTeX and mermaid.js from a CDN, so those two need a network connection to display. `-o` writes to a file in every format; without it, HTML, JSON and TXT print to stdout while PDF and EPUB default to the input name with a new extension.
 
 ```bash
-mdx export --to html README.md              # standalone HTML page
+mdx export --to html README.md              # single-file HTML page
 mdx export --to pdf README.md               # PDF document (native, no browser needed)
 mdx export --to epub README.md              # EPUB e-book (Apple Books, Kobo, Calibre)
 mdx export --to json README.md              # AST as JSON
@@ -287,14 +297,39 @@ mdx completions fish                 # print fish completions to stdout
 mdx completions powershell           # print PowerShell completions to stdout
 ```
 
+## Markdown support
+
+Conformance target is GFM plus the extensions technical documentation actually uses. This table is generated from `tests/parity_test.rs`, which fails if a cell drifts.
+
+| Construct | Terminal | HTML / serve | txt | JSON |
+|---|---|---|---|---|
+| Headings, emphasis, strikethrough | ✅ | ✅ | ✅ | ✅ |
+| Inline code, code blocks | ✅ | ✅ | ✅ | ✅ |
+| Links, autolinks | ✅ | ✅ | ✅ | ✅ |
+| Images | ✅ | ✅ | alt text only | ✅ |
+| Lists, ordered lists, task lists | ✅ | ✅ | ✅ | ✅ |
+| Tables | ✅ | ✅ | ✅ | ✅ |
+| Block quotes, GFM alerts | ✅ | ✅ | ✅ | ✅ |
+| Footnotes, inline footnotes | ✅ | ✅ | ✅ | ✅ |
+| Math (inline and display) | Unicode | KaTeX | ✅ | ✅ |
+| Mermaid | source | SVG | ✅ | ✅ |
+| Description lists | ✅ | ✅ | ✅ | ✅ |
+| `==highlight==`, `^superscript^` | ✅ | ✅ | ✅ | ✅ |
+| `[[wikilinks]]` | ✅ | ✅ | ✅ | ✅ |
+| Raw HTML | ✅ | opt-in | ✅ | ✅ |
+| Front matter | stripped | stripped | stripped | ✅ |
+
+PDF and EPUB render the same document model; they are not in the table because their output is binary rather than text-comparable.
+
 ## Features
 
 - **Syntax highlighting** — language-aware code blocks via syntect
 - **Tables** — full GFM table rendering with alignment and cell wrapping
 - **Mermaid diagrams** — rendered as interactive SVG in browser preview via mermaid.js
-- **Math** — inline `$...$` and display `$$...$$` via KaTeX in browser preview
+- **Math** — inline `$...$` and display `$$...$$`; KaTeX in browser preview, Unicode in the terminal (`\frac{a}{b}` renders as `a/b`)
+- **Docs extensions** — description lists, `==highlight==`, `^superscript^`, `[[wikilinks]]` and inline footnotes, on top of GFM
 - **Images** — inline image rendering in supported terminals (iTerm2, kitty)
-- **URL fetching** — render markdown directly from URLs
+- **URL fetching** — `mdx <url>` renders a markdown file from a URL; use `mdx fetch <url>` for web *pages*, which extracts the article
 - **Web page extraction** — `mdx fetch` extracts article content as clean markdown, with MFA content negotiation
 - **Markdown for Agents** — `mdx serve` responds with raw markdown when agents send `Accept: text/markdown`
 - **Live reload** — `mdx serve` opens a browser preview that updates on file changes
@@ -306,7 +341,7 @@ mdx completions powershell           # print PowerShell completions to stdout
 - **Multi-file mode** — `mdx serve a.md b.md` with sidebar file navigation
 - **Dark/light theme** — toggle with button or `t` key, persisted in localStorage
 - **Full-text search** — BM25-ranked search across markdown files with `mdx search`
-- **Slide presentation** — `mdx present` splits on `---` for terminal slides
+- **Slide presentation** — `mdx present` splits on `---` for terminal slides, ignoring `---` inside code blocks and front matter
 - **ToC generation** — `mdx toc` extracts headings with depth control
 - **Document stats** — word count, reading time, heading/link/image counts
 - **Formatter** — normalize markdown style with `mdx fmt`
@@ -354,7 +389,7 @@ Built on these libraries:
 | [textwrap](https://github.com/mgeisler/textwrap) | Text wrapping |
 | [image](https://github.com/image-rs/image) | Image decoding (PNG, JPEG, GIF, WebP) |
 | [genpdfi](https://github.com/theiskaa/genpdfi) | PDF generation |
-| [markdown2pdf](https://github.com/theiskaa/markdown2pdf) | Markdown to PDF conversion |
+| [markdown2pdf](https://github.com/theiskaa/markdown2pdf) | PDF font loading |
 | [epub-builder](https://github.com/lise-henry/epub-builder) | EPUB e-book generation |
 | [ureq](https://github.com/algesten/ureq) | HTTP client (URL fetching) |
 | [dom_smoothie](https://github.com/niklak/dom_smoothie) | Web article extraction (Readability) |
