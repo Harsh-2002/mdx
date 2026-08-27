@@ -9,7 +9,10 @@
 //! marker is gone and the escapes are permanent. One constructor, three
 //! call sites.
 
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::cli::ThemeName;
 
 use comrak::Options;
 
@@ -93,6 +96,64 @@ pub fn fmt_options(width: usize) -> Options<'static> {
     let mut options = markdown_options();
     options.render.width = width;
     options
+}
+
+pub const DEFAULT_SYNTAX_THEME: &str = "base16-ocean.dark";
+
+/// How a document should look, independent of where it is rendered.
+///
+/// Process-wide because serve renders from spawned watcher threads and from
+/// axum handlers holding only `State<Arc<AppState>>`, and watch/present take
+/// no args struct at all -- none of them has a path back to the parsed flags.
+#[derive(Debug, Clone)]
+pub struct Presentation {
+    pub theme: ThemeName,
+    pub syntax_theme: String,
+    pub custom_css: String,
+}
+
+impl Default for Presentation {
+    fn default() -> Self {
+        Self {
+            theme: ThemeName::Dark,
+            syntax_theme: DEFAULT_SYNTAX_THEME.to_string(),
+            custom_css: String::new(),
+        }
+    }
+}
+
+static PRESENTATION: OnceLock<Presentation> = OnceLock::new();
+
+/// Install presentation settings. Called once from `main`, before rendering.
+pub fn set_presentation(p: Presentation) {
+    let _ = PRESENTATION.set(p);
+}
+
+pub fn presentation() -> &'static Presentation {
+    PRESENTATION.get_or_init(Presentation::default)
+}
+
+pub fn theme() -> &'static ThemeName {
+    &presentation().theme
+}
+
+pub fn syntax_theme() -> &'static str {
+    &presentation().syntax_theme
+}
+
+pub fn custom_css() -> &'static str {
+    &presentation().custom_css
+}
+
+/// A bad path warns and yields no CSS rather than aborting the command.
+pub fn load_css_file(path: Option<&str>) -> String {
+    match path {
+        Some(p) => std::fs::read_to_string(p).unwrap_or_else(|e| {
+            eprintln!("Warning: could not read CSS file '{}': {}", p, e);
+            String::new()
+        }),
+        None => String::new(),
+    }
 }
 
 #[cfg(test)]

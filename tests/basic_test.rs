@@ -1702,3 +1702,87 @@ fn test_toc_anchors_match_html_ids() {
 
     let _ = std::fs::remove_file(&tmp);
 }
+
+#[test]
+fn test_global_flags_accepted_after_subcommand() {
+    let tmp = write_tmp("globals.md", "# T\n\nBody.\n");
+    for flag in [
+        vec!["--plain"],
+        vec!["--theme", "light"],
+        vec!["--width", "40"],
+        vec!["--color", "never"],
+        vec!["--syntax-theme", "InspiredGitHub"],
+    ] {
+        let mut args = vec!["toc"];
+        args.extend(flag.iter().copied());
+        let out = Command::new(env!("CARGO_BIN_EXE_mdx"))
+            .args(&args)
+            .arg(&tmp)
+            .env("NO_COLOR", "1")
+            .output()
+            .expect("Failed to execute mdx");
+        assert!(
+            out.status.success(),
+            "mdx toc {:?} should parse: {}",
+            flag,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_pager_short_still_belongs_to_serve_port() {
+    // `mdx serve f.md -p 8080` is documented; --pager must never take -p away
+    // from serve's --port.
+    let out = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["serve", "--help"])
+        .output()
+        .expect("Failed to execute mdx");
+    let help = String::from_utf8_lossy(&out.stdout);
+    assert!(help.contains("-p, --port"), "serve -p must mean --port");
+    assert!(
+        !help.contains("--pager"),
+        "--pager must not be pushed into serve"
+    );
+}
+
+#[test]
+fn test_css_reaches_html_export() {
+    let tmp = write_tmp("css-doc.md", "# T\n\nBody.\n");
+    let css = write_tmp("inject.css", "body{--mdx-marker:7}\n");
+    let out = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["--css"])
+        .arg(&css)
+        .args(["export", "--to", "html"])
+        .arg(&tmp)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("Failed to execute mdx");
+    let html = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        html.contains("--mdx-marker:7"),
+        "top-level --css used to be dead code and is now honored by export"
+    );
+    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(&css);
+}
+
+#[test]
+fn test_theme_reaches_html_export() {
+    let tmp = write_tmp("theme-doc.md", "# T\n");
+    for (flag, want) in [
+        ("light", "data-theme=\"light\""),
+        ("dark", "data-theme=\"dark\""),
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_mdx"))
+            .args(["--theme", flag, "export", "--to", "html"])
+            .arg(&tmp)
+            .env("NO_COLOR", "1")
+            .output()
+            .expect("Failed to execute mdx");
+        let html = String::from_utf8_lossy(&out.stdout);
+        assert!(html.contains(want), "--theme {} should reach export", flag);
+    }
+    let _ = std::fs::remove_file(&tmp);
+}

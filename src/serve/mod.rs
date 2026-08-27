@@ -21,7 +21,15 @@ use crate::cli::ServeArgs;
 use crate::cli::ThemeName;
 use crate::html;
 
-const SYNTAX_THEME: &str = "base16-ocean.dark";
+fn syntax_theme() -> &'static str {
+    crate::options::syntax_theme()
+}
+
+/// Owned so the eight `let theme = doc_theme();` sites keep passing `&theme`,
+/// including those inside `move` closures and the axum handler.
+fn doc_theme() -> ThemeName {
+    crate::options::theme().clone()
+}
 
 /// Parse the `--host` value into an address to bind.
 fn bind_ip(host: &str) -> Result<IpAddr, Box<dyn std::error::Error>> {
@@ -180,10 +188,10 @@ async fn serve_stdin(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>>
     let mut buf = String::new();
     std::io::stdin().read_to_string(&mut buf)?;
 
-    let theme = ThemeName::Dark;
-    let custom_css = load_custom_css(args.css.as_deref());
-    let full = html::render_standalone(&buf, SYNTAX_THEME, &theme, "stdin", &custom_css);
-    let raw = html::render_fragment(&buf, SYNTAX_THEME);
+    let theme = doc_theme();
+    let custom_css = crate::options::custom_css().to_string();
+    let full = html::render_standalone(&buf, syntax_theme(), &theme, "stdin", &custom_css);
+    let raw = html::render_fragment(&buf, syntax_theme());
 
     let (tx, _) = broadcast::channel::<String>(16);
 
@@ -241,10 +249,10 @@ async fn serve_single_file(args: &ServeArgs, file: &str) -> Result<(), Box<dyn s
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "preview".to_string());
 
-    let theme = ThemeName::Dark;
-    let custom_css = load_custom_css(args.css.as_deref());
-    let full = html::render_page(&markdown, SYNTAX_THEME, &theme, &filename, &custom_css);
-    let raw = html::render_fragment(&markdown, SYNTAX_THEME);
+    let theme = doc_theme();
+    let custom_css = crate::options::custom_css().to_string();
+    let full = html::render_page(&markdown, syntax_theme(), &theme, &filename, &custom_css);
+    let raw = html::render_fragment(&markdown, syntax_theme());
 
     let (tx, _) = broadcast::channel::<String>(16);
 
@@ -297,7 +305,7 @@ async fn serve_single_file(args: &ServeArgs, file: &str) -> Result<(), Box<dyn s
                 .watch(&path, RecursiveMode::NonRecursive)
                 .expect("Failed to watch file");
 
-            let theme = ThemeName::Dark;
+            let theme = doc_theme();
             let mut last = Instant::now();
             for _ in nrx {
                 if last.elapsed() < Duration::from_millis(300) {
@@ -307,8 +315,8 @@ async fn serve_single_file(args: &ServeArgs, file: &str) -> Result<(), Box<dyn s
 
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     let css = &state.custom_css;
-                    let full = html::render_page(&content, SYNTAX_THEME, &theme, &fname, css);
-                    let raw = html::render_fragment(&content, SYNTAX_THEME);
+                    let full = html::render_page(&content, syntax_theme(), &theme, &fname, css);
+                    let raw = html::render_fragment(&content, syntax_theme());
                     let mut files = state.files.write().unwrap();
                     files.insert(
                         String::new(),
@@ -376,8 +384,8 @@ async fn serve_directory(
         return Err(format!("No .md files found in '{}'", dir.display()).into());
     }
 
-    let theme = ThemeName::Dark;
-    let custom_css = load_custom_css(args.css.as_deref());
+    let theme = doc_theme();
+    let custom_css = crate::options::custom_css().to_string();
     let filenames: Vec<String> = md_files.iter().map(|(n, _)| n.clone()).collect();
     let index = html::render_index_page(&filenames, &theme, true);
 
@@ -387,14 +395,14 @@ async fn serve_directory(
         if let Ok(content) = std::fs::read_to_string(path) {
             let full = html::render_page_multi(
                 &content,
-                SYNTAX_THEME,
+                syntax_theme(),
                 &theme,
                 name,
                 &filenames,
                 name,
                 &custom_css,
             );
-            let raw = html::render_fragment(&content, SYNTAX_THEME);
+            let raw = html::render_fragment(&content, syntax_theme());
             files_map.insert(
                 name.clone(),
                 FileEntry {
@@ -448,7 +456,7 @@ async fn serve_directory(
                 .watch(&dir, RecursiveMode::NonRecursive)
                 .expect("Failed to watch directory");
 
-            let theme = ThemeName::Dark;
+            let theme = doc_theme();
             let mut last = Instant::now();
             for changed_file in nrx {
                 if last.elapsed() < Duration::from_millis(300) {
@@ -466,14 +474,14 @@ async fn serve_directory(
                     let css = &state.custom_css;
                     let full = html::render_page_multi(
                         &content,
-                        SYNTAX_THEME,
+                        syntax_theme(),
                         &theme,
                         &changed_file,
                         &current_filenames,
                         &changed_file,
                         css,
                     );
-                    let raw = html::render_fragment(&content, SYNTAX_THEME);
+                    let raw = html::render_fragment(&content, syntax_theme());
                     let mut files = state.files.write().unwrap();
                     files.insert(
                         changed_file.clone(),
@@ -521,8 +529,8 @@ async fn serve_directory(
 }
 
 async fn serve_multi_files(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let theme = ThemeName::Dark;
-    let custom_css = load_custom_css(args.css.as_deref());
+    let theme = doc_theme();
+    let custom_css = crate::options::custom_css().to_string();
 
     let mut entries: Vec<(String, PathBuf, String)> = Vec::new();
     for file in &args.files {
@@ -545,14 +553,14 @@ async fn serve_multi_files(args: &ServeArgs) -> Result<(), Box<dyn std::error::E
     for (name, _, content) in &entries {
         let full = html::render_page_multi(
             content,
-            SYNTAX_THEME,
+            syntax_theme(),
             &theme,
             name,
             &filenames,
             name,
             &custom_css,
         );
-        let raw = html::render_fragment(content, SYNTAX_THEME);
+        let raw = html::render_fragment(content, syntax_theme());
         files_map.insert(
             name.clone(),
             FileEntry {
@@ -616,7 +624,7 @@ async fn serve_multi_files(args: &ServeArgs) -> Result<(), Box<dyn std::error::E
                     .expect("Failed to watch file");
             }
 
-            let theme = ThemeName::Dark;
+            let theme = doc_theme();
             let mut last = Instant::now();
             let name_to_path: HashMap<String, PathBuf> = filenames
                 .iter()
@@ -636,14 +644,14 @@ async fn serve_multi_files(args: &ServeArgs) -> Result<(), Box<dyn std::error::E
                     let css = &state.custom_css;
                     let full = html::render_page_multi(
                         &content,
-                        SYNTAX_THEME,
+                        syntax_theme(),
                         &theme,
                         &changed_file,
                         &filenames,
                         &changed_file,
                         css,
                     );
-                    let raw = html::render_fragment(&content, SYNTAX_THEME);
+                    let raw = html::render_fragment(&content, syntax_theme());
                     let mut files = state.files.write().unwrap();
                     files.insert(
                         changed_file.clone(),
@@ -1098,17 +1106,17 @@ async fn create_file(State(state): State<Arc<AppState>>, body: String) -> (Statu
     };
 
     // Render the new file's page
-    let theme = ThemeName::Dark;
+    let theme = doc_theme();
     let full = html::render_page_multi(
         &markdown,
-        SYNTAX_THEME,
+        syntax_theme(),
         &theme,
         &filename,
         &updated_filenames,
         &filename,
         &state.custom_css,
     );
-    let raw = html::render_fragment(&markdown, SYNTAX_THEME);
+    let raw = html::render_fragment(&markdown, syntax_theme());
 
     // Insert into files map
     {
@@ -1373,16 +1381,6 @@ fn atomic_write(path: &std::path::Path, content: &str) -> std::io::Result<()> {
 }
 
 use std::io::IsTerminal;
-
-fn load_custom_css(path: Option<&str>) -> String {
-    match path {
-        Some(p) => std::fs::read_to_string(p).unwrap_or_else(|e| {
-            eprintln!("Warning: could not read CSS file '{}': {}", p, e);
-            String::new()
-        }),
-        None => String::new(),
-    }
-}
 
 #[cfg(test)]
 mod tests {

@@ -64,16 +64,23 @@ mdx completions install              # install shell completions
 
 ## Options
 
+Accepted before or after any subcommand — `mdx --plain fetch URL` and `mdx fetch URL --plain` are the same command.
+
+| Flag | Description | Honored by |
+|------|-------------|------------|
+| `-w, --width <N>` | Output width in columns | terminal output |
+| `--color auto\|always\|never` | Color output mode | terminal output |
+| `--plain` | Plain text, no colors or box-drawing | terminal output |
+| `--theme dark\|light` | Color theme | terminal, serve, watch, present, publish, `export --to html` |
+| `--syntax-theme <NAME>` | Syntax highlighting theme | every target that highlights code |
+| `--css <FILE>` | Custom CSS to inject | serve, `export --to html`, publish |
+
+### Top level only
+
 | Flag | Description |
 |------|-------------|
-| `-w, --width <N>` | Output width in columns |
-| `-p, --pager` | Pipe through `less` (or `more` on Windows) |
-| `--color auto\|always\|never` | Color output mode |
-| `--plain` | Plain text, no colors or box-drawing |
-| `--theme dark\|light` | Color theme |
-| `--syntax-theme <NAME>` | Syntax highlighting theme |
+| `-p, --pager` | Pipe through `less` (or `more` on Windows). `mdx fetch` has its own `-p`; `mdx serve` uses `-p` for `--port` |
 | `--list-syntax-themes` | List available syntax themes |
-| `--css <FILE>` | Custom CSS for HTML/serve output |
 | `--generate-man` | Generate man page |
 
 ## Commands
@@ -87,7 +94,7 @@ mdx serve file.md                    # single file with live reload
 mdx serve ./notes/                   # directory as card grid, click to view
 mdx serve a.md b.md c.md             # multiple files with sidebar navigation
 mdx serve file.md -p 8080            # specify port
-mdx serve file.md --css custom.css   # inject custom CSS
+mdx --css custom.css serve file.md   # inject custom CSS
 mdx serve file.md --host 0.0.0.0     # expose on your LAN (see warning below)
 mdx serve file.md --unsafe-html      # render raw HTML in the document
 ```

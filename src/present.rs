@@ -8,7 +8,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Text;
 use ratatui::widgets::Paragraph;
 
-use crate::cli::{ColorMode, PresentArgs, ThemeName};
+use crate::cli::{ColorMode, PresentArgs};
 use crate::parse::parse_markdown;
 use crate::render::{self, RenderContext};
 use crate::style::theme::Theme;
@@ -23,12 +23,17 @@ struct App {
 fn render_slide(markdown: &str, term_width: u16) -> Text<'static> {
     let color_mode = ColorMode::Auto;
     let term = TerminalInfo::detect(&color_mode, Some(term_width));
-    let theme = Theme::from_name(&ThemeName::Dark);
+    let theme = Theme::from_name(crate::options::theme());
     let arena = typed_arena::Arena::new();
     let root = parse_markdown(&arena, markdown);
 
     let mut buf: Vec<u8> = Vec::new();
-    let mut ctx = RenderContext::new(&term, &theme, "base16-ocean.dark".to_string(), false);
+    let mut ctx = RenderContext::new(
+        &term,
+        &theme,
+        crate::options::syntax_theme().to_string(),
+        false,
+    );
     if render::render(&mut buf, root, &mut ctx).is_err() {
         return Text::raw("Error rendering slide");
     }

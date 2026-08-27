@@ -89,10 +89,10 @@ pub fn run(args: &ExportArgs) -> Result<(), Box<dyn std::error::Error>> {
         "html" => {
             let html = crate::html::render_standalone(
                 &content,
-                "base16-ocean.dark",
-                &crate::cli::ThemeName::Dark,
+                crate::options::syntax_theme(),
+                crate::options::theme(),
                 title,
-                "",
+                crate::options::custom_css(),
             );
             emit(&html, args.output.as_deref())?;
         }
@@ -628,7 +628,7 @@ fn export_epub(
         })
         .unwrap_or_else(|| "Untitled".to_string());
 
-    let html_fragment = crate::html::render_fragment(markdown, "base16-ocean.dark");
+    let html_fragment = crate::html::render_fragment(markdown, crate::options::syntax_theme());
 
     let base_dir = source_file
         .map(|f| {
@@ -667,7 +667,7 @@ fn export_epub(
     let chapters = split_chapters(crate::frontmatter::strip(markdown));
     if chapters.len() > 1 {
         for (i, (chapter_title, body)) in chapters.iter().enumerate() {
-            let fragment = crate::html::render_fragment(body, "base16-ocean.dark");
+            let fragment = crate::html::render_fragment(body, crate::options::syntax_theme());
             let (fragment, _) = process_images(&fragment, &base_dir);
             let xhtml = wrap_xhtml(
                 if chapter_title.is_empty() {

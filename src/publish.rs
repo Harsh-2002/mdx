@@ -178,7 +178,7 @@ fn truncate_description(desc: &str, max_chars: usize) -> String {
 }
 
 fn render_blog_page(post: &Post) -> String {
-    let body = html::render_fragment(&post.markdown, "base16-ocean.dark");
+    let body = html::render_fragment(&post.markdown, crate::options::syntax_theme());
 
     format!(
         r#"<!DOCTYPE html>

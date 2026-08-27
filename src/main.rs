@@ -17,6 +17,12 @@ fn main() {
 
     let args = Args::parse();
 
+    md::options::set_presentation(md::options::Presentation {
+        theme: args.theme.clone(),
+        syntax_theme: args.syntax_theme.clone(),
+        custom_css: md::options::load_css_file(args.css.as_deref()),
+    });
+
     // Handle subcommands
     #[cfg(feature = "serve")]
     if let Some(md::cli::Command::Serve(ref serve_args)) = args.command {
@@ -146,7 +152,9 @@ fn main() {
         let theme = Theme::from_name(&args.theme);
         let arena = typed_arena::Arena::new();
         let root = parse_markdown(&arena, &markdown);
-        if args.pager {
+        // --pager is the one render flag that is not global, so the root and
+        // subcommand forms have to be OR-ed.
+        if args.pager || fetch_args.pager {
             render_with_pager(root, &term, &theme, &args.syntax_theme, args.plain, None);
         } else {
             let stdout = io::stdout();
