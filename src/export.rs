@@ -136,7 +136,180 @@ pub fn run(args: &ExportArgs) -> Result<(), Box<dyn std::error::Error>> {
 
 // ─── PDF Export via genpdfi ───────────────────────────────────────────────────
 
+/// Sans-serif font file stems to look for, best first.
+///
+/// Helvetica/Arial first for metric fidelity, then the metric-compatible
+/// clones every mainstream distro ships. Nimbus Sans is the URW Helvetica
+/// clone installed with ghostscript.
+const SANS_CANDIDATES: &[&str] = &[
+    "Helvetica",
+    "Arial",
+    "LiberationSans-Regular",
+    "DejaVuSans",
+    "NimbusSans-Regular",
+    "FreeSans",
+    "Verdana",
+];
+
+/// Monospace font file stems to look for, best first.
+const MONO_CANDIDATES: &[&str] = &[
+    "Courier",
+    "CourierNew",
+    "LiberationMono-Regular",
+    "DejaVuSansMono",
+    "NimbusMonoPS-Regular",
+    "FreeMono",
+];
+
+/// Directories to search for fonts, per platform.
+fn font_search_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = if cfg!(target_os = "macos") {
+        vec![
+            "/System/Library/Fonts".into(),
+            "/System/Library/Fonts/Supplemental".into(),
+            "/Library/Fonts".into(),
+        ]
+    } else if cfg!(target_os = "windows") {
+        vec!["C:\\Windows\\Fonts".into()]
+    } else {
+        vec![
+            "/usr/share/fonts".into(),
+            "/usr/local/share/fonts".into(),
+            "/usr/share/texmf/fonts".into(),
+        ]
+    };
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        dirs.push(home.join(".fonts"));
+        dirs.push(home.join(".local/share/fonts"));
+    }
+    dirs
+}
+
+/// Find a usable font file by trying each candidate stem in turn.
+///
+/// markdown2pdf's own lookup reads only the direct children of a few hardcoded
+/// directories, but Debian and Ubuntu store fonts one level down
+/// (`/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf`), so it finds nothing and
+/// every PDF export fails with "Could not find a font for built-in metrics" --
+/// on the GitHub ubuntu runners too. Walk recursively instead.
+fn find_font_file(candidates: &[&str]) -> Option<PathBuf> {
+    let dirs = font_search_dirs();
+    for stem in candidates {
+        let want: Vec<String> = ["ttf", "otf"]
+            .iter()
+            .map(|ext| format!("{}.{}", stem, ext).to_lowercase())
+            .collect();
+        for dir in &dirs {
+            if !dir.is_dir() {
+                continue;
+            }
+            for entry in walkdir::WalkDir::new(dir)
+                .max_depth(4)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                // .ttc collections are not supported by the font parser.
+                if name.ends_with(".ttc") {
+                    continue;
+                }
+                if want.contains(&name) {
+                    return Some(entry.into_path());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Load a PDF font family, preferring a real system font file.
+///
+/// Falls back to markdown2pdf's built-in metrics loader so macOS and Windows,
+/// where the hardcoded lookup does work, behave exactly as before.
+fn load_pdf_font(
+    candidates: &[&str],
+    builtin: &str,
+) -> Result<genpdfi::fonts::FontFamily<genpdfi::fonts::FontData>, Box<dyn std::error::Error>> {
+    if let Some(path) = find_font_file(candidates)
+        && let Ok(family) =
+            markdown2pdf::fonts::load_font_family(markdown2pdf::fonts::FontSource::File(path))
+    {
+        return Ok(family);
+    }
+    markdown2pdf::fonts::load_builtin_font_family(builtin).map_err(|e| {
+        format!(
+            "Font error: {}. Searched for {:?} under {:?}.",
+            e,
+            candidates,
+            font_search_dirs()
+        )
+        .into()
+    })
+}
+
 const HEADING_SIZES: [u8; 6] = [24, 20, 16, 14, 12, 11];
+
+/// Width of the A4 content area in mm (210mm page, 15mm side margins).
+const RULE_WIDTH_MM: f32 = 180.0;
+
+/// Font size of the decorative rule under H1/H2.
+const RULE_FONT_SIZE: u8 = 4;
+
+/// Smallest size a heading will be shrunk to in order to fit.
+const MIN_HEADING_SIZE: u8 = 8;
+
+/// Shrink a heading until its longest unbreakable word fits the content width.
+///
+/// genpdfi breaks lines on whitespace, so a single word wider than the content
+/// area has no break opportunity and aborts the entire export with "Page
+/// overflowed while trying to wrap a string" -- one long word in one heading
+/// takes the whole document down. Stepping the size down keeps every character
+/// rather than truncating, and only affects headings that would otherwise fail.
+///
+/// Bounded by `MIN_HEADING_SIZE`, below which a heading stops being readable.
+/// A single word still too wide at that size -- roughly 100+ characters with no
+/// break in it -- will still fail the export.
+fn fit_heading_size(doc: &genpdfi::Document, text: &str, size: u8) -> u8 {
+    let Some(longest) = text.split_whitespace().max_by_key(|w| w.chars().count()) else {
+        return size;
+    };
+    let mut size = size;
+    while size > MIN_HEADING_SIZE {
+        let width: f32 = style::Style::new()
+            .with_font_size(size)
+            .bold()
+            .str_width(doc.font_cache(), longest)
+            .into();
+        if !width.is_finite() || width <= RULE_WIDTH_MM {
+            break;
+        }
+        size -= 1;
+    }
+    size
+}
+
+/// How many rule glyphs fit across the content width.
+///
+/// This was a hardcoded `repeat(200)`. Under markdown2pdf's built-in Helvetica
+/// metrics that happened not to overflow, but a real embedded font reports true
+/// advance widths, and 200 box-drawing glyphs are far wider than the page. The
+/// string contains no spaces, so genpdfi has no break opportunity and the whole
+/// export dies with "Page overflowed while trying to wrap a string" -- on every
+/// document with an H1 or H2.
+fn rule_repeat_count(doc: &genpdfi::Document, rule_char: &str, size: u8) -> usize {
+    let style = style::Style::new().with_font_size(size);
+    let width: f32 = style.str_width(doc.font_cache(), rule_char).into();
+    if !width.is_finite() || width <= 0.0 {
+        // Font gave us nothing usable; pick a count that fits any plausible glyph.
+        return 60;
+    }
+    ((RULE_WIDTH_MM / width).floor() as usize).clamp(1, 400)
+}
 
 /// A wrapper element that draws a filled background color behind its content.
 /// Uses PDF layers: background on current layer, content on next layer (on top).
@@ -542,15 +715,11 @@ pub fn export_pdf(
     let arena = typed_arena::Arena::new();
     let root = parse_markdown(&arena, markdown);
 
-    // Load built-in Helvetica font (no external font files needed)
-    let font = markdown2pdf::fonts::load_builtin_font_family("Helvetica")
-        .map_err(|e| format!("Font error: {}", e))?;
-
+    let font = load_pdf_font(SANS_CANDIDATES, "Helvetica")?;
     let mut doc = genpdfi::Document::new(font);
 
-    // Load Courier for monospace code blocks
-    let courier = markdown2pdf::fonts::load_builtin_font_family("Courier")
-        .map_err(|e| format!("Font error: {}", e))?;
+    // Monospace family for code blocks.
+    let courier = load_pdf_font(MONO_CANDIDATES, "Courier")?;
     let courier_ref = doc.add_font_family(courier);
 
     let title = extract_title(root).unwrap_or_else(|| "document".to_string());
@@ -650,6 +819,7 @@ fn render_block<'a>(
             }
 
             doc.push(elements::Break::new(1.5_f32));
+            let size = fit_heading_size(doc, &collect_text(node), size);
             let mut p = elements::Paragraph::default();
             let base = style::Style::new()
                 .with_font_size(size)
@@ -666,10 +836,13 @@ fn render_block<'a>(
                 } else {
                     style::Color::Rgb(210, 212, 218)
                 };
+                let count = rule_repeat_count(doc, rule_char, RULE_FONT_SIZE);
                 let mut rule = elements::Paragraph::default();
                 rule.push_styled(
-                    rule_char.repeat(200),
-                    style::Style::new().with_font_size(4).with_color(rule_color),
+                    rule_char.repeat(count),
+                    style::Style::new()
+                        .with_font_size(RULE_FONT_SIZE)
+                        .with_color(rule_color),
                 );
                 doc.push(rule);
             }
