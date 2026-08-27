@@ -1518,3 +1518,48 @@ fn test_export_epub_custom_output() {
     let _ = std::fs::remove_file(&tmp);
     let _ = std::fs::remove_file(&custom_output);
 }
+
+// ── fmt: GFM alert round-trip ────────────────────────────────────────
+
+#[test]
+fn test_fmt_in_place_preserves_gfm_alert() {
+    // `mdx fmt --in-place` used to rewrite `> [!NOTE]` as `> \[\!NOTE\]`,
+    // permanently destroying the alert marker in the user's own file.
+    // The doubled blank line makes the file genuinely unformatted, so
+    // --in-place takes the tmp-write + rename branch (src/fmt.rs:29-36)
+    // instead of the "already formatted" short-circuit.
+    let tmp = write_tmp(
+        "fmt-alert.md",
+        "# Doc\n\n\n> [!NOTE]\n> Useful information.\n",
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["fmt", "--in-place"])
+        .arg(&tmp)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("Failed to execute mdx");
+    assert!(
+        output.status.success(),
+        "fmt --in-place should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let after = std::fs::read_to_string(&tmp).unwrap();
+    assert!(
+        after.contains("> [!NOTE]"),
+        "alert marker must survive fmt --in-place, file is now: {}",
+        after
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_fmt_stdin_alert_is_idempotent() {
+    let once = run_md_stdin(&["fmt"], "> [!NOTE]\n> Useful information.\n");
+    assert!(
+        once.contains("> [!NOTE]"),
+        "alert marker must survive fmt, got: {}",
+        once
+    );
+    let twice = run_md_stdin(&["fmt"], &once);
+    assert_eq!(once, twice, "fmt output must be stable when re-formatted");
+}

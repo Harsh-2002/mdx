@@ -180,6 +180,8 @@ mdx toc --depth 6 README.md         # all heading levels
 
 Normalizes markdown formatting. Use `--check` in CI to ensure consistent style.
 
+Wraps at a fixed 80 columns (not the global `--width`) so that formatting a file is reproducible regardless of the terminal it runs in. Parses the same markdown as the renderer, GFM alerts (`> [!NOTE]`) included; note that `> [!note]` is normalized to `> [!NOTE]`.
+
 ```bash
 mdx fmt README.md                # print formatted to stdout
 mdx fmt --in-place README.md     # overwrite the file

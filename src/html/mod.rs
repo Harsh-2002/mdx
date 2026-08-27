@@ -1,8 +1,8 @@
 pub mod assets;
 
+use comrak::markdown_to_html_with_plugins;
 use comrak::options::Plugins;
 use comrak::plugins::syntect::SyntectAdapter;
-use comrak::{Options, markdown_to_html_with_plugins};
 
 use crate::cli::ThemeName;
 use assets::{
@@ -11,24 +11,9 @@ use assets::{
     PENCIL_SVG, PLUS_SVG, PRINT_SVG,
 };
 
-fn comrak_options() -> Options<'static> {
-    let mut options = Options::default();
-    options.extension.strikethrough = true;
-    options.extension.table = true;
-    options.extension.autolink = true;
-    options.extension.tasklist = true;
-    options.extension.footnotes = true;
-    options.extension.alerts = true;
-    options.extension.front_matter_delimiter = Some("---".to_owned());
-    options.extension.math_dollars = true;
-    options.extension.math_code = true;
-    options.render.r#unsafe = true;
-    options
-}
-
 /// Render markdown to an HTML fragment (just the article body).
 pub fn render_fragment(markdown: &str, syntax_theme: &str) -> String {
-    let options = comrak_options();
+    let options = crate::options::html_options();
     let adapter = SyntectAdapter::new(Some(syntax_theme));
     let mut plugins = Plugins::default();
     plugins.render.codefence_syntax_highlighter = Some(&adapter);
