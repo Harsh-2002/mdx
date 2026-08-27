@@ -46,9 +46,6 @@ pub fn markdown_options() -> Options<'static> {
     options.extension.math_dollars = true;
     options.extension.math_code = true;
 
-    // `extension.header_ids` is intentionally left at its default of `None`:
-    // the HTML assets assign heading anchors client-side.
-
     options
 }
 
@@ -76,6 +73,11 @@ pub fn allow_raw_html() -> bool {
 /// Options for the HTML renderer (`serve`, `export`, `publish`).
 pub fn html_options() -> Options<'static> {
     let mut options = markdown_options();
+    // Emit id= on every heading, so `mdx toc` links resolve and deep links
+    // work. Only the HTML targets: the terminal has nothing to link to. The
+    // browser assets assign `heading-N` only when an id is absent, so these
+    // win. Empty prefix keeps the id equal to the bare anchor.
+    options.extension.header_ids = Some(String::new());
     // Raw HTML and non-http(s) links pass through only when the user opted in.
     // With this off, comrak replaces raw HTML with `<!-- raw HTML omitted -->`
     // and blanks javascript:/vbscript:/file:/data: hrefs.

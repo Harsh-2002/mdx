@@ -1644,3 +1644,61 @@ fn test_fmt_stdin_alert_is_idempotent() {
     let twice = run_md_stdin(&["fmt"], &once);
     assert_eq!(once, twice, "fmt output must be stable when re-formatted");
 }
+
+#[test]
+fn test_toc_anchors_match_html_ids() {
+    // `mdx toc` used its own slugify while no renderer emitted heading ids at
+    // all, so every anchor it produced was a dead link in html/serve/publish/
+    // epub. Both sides now go through comrak's Anchorizer.
+    let tmp = write_tmp(
+        "toc-anchor-match.md",
+        "# Getting Started\n\na\n\n## Install & Setup\n\nb\n\n## Install & Setup\n\ndup\n",
+    );
+
+    let toc = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["toc", "--depth", "3"])
+        .arg(&tmp)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("Failed to execute mdx toc");
+    let toc = String::from_utf8_lossy(&toc.stdout).to_string();
+
+    let html = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["export", "--to", "html"])
+        .arg(&tmp)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("Failed to execute mdx export");
+    let html = String::from_utf8_lossy(&html.stdout).to_string();
+
+    // Every anchor the TOC emits must exist as an id in the rendered HTML.
+    let mut checked = 0;
+    for line in toc.lines() {
+        let Some(start) = line.find("](#") else {
+            continue;
+        };
+        let rest = &line[start + 3..];
+        let Some(end) = rest.find(')') else { continue };
+        let anchor = &rest[..end];
+        assert!(
+            html.contains(&format!("id=\"{}\"", anchor)),
+            "TOC anchor #{} has no matching id in the HTML output",
+            anchor
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 3,
+        "expected several anchors, checked {}",
+        checked
+    );
+
+    // Duplicate headings must get distinct anchors, not collide.
+    assert!(
+        toc.contains("#install--setup-1"),
+        "duplicate heading should be deduplicated, got: {}",
+        toc
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
