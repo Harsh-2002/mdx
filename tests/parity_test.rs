@@ -14,8 +14,10 @@ enum Cell {
     /// Every probe must appear, but this target renders differently enough to
     /// need its own.
     OkWith(Probes),
-    /// At least one probe must be absent. The string says what is lost.
-    Gap(&'static str),
+    /// At least one of these probes must be absent. The string says what is
+    /// lost. A gap always carries its own probes: what is missing is rarely
+    /// the same string as what is present when the cell is supported.
+    Gap(Probes, &'static str),
 }
 
 use Cell::{Gap, Ok as Full, OkWith};
@@ -94,7 +96,10 @@ const MATRIX: &[Row] = &[
         probes: &[&["probe alt"]],
         term: Full,
         html: Full,
-        txt: Full,
+        txt: Gap(
+            &[&["probe.png"]],
+            "txt emits the alt text only; the image path is dropped",
+        ),
         json: Full,
     },
     Row {
@@ -126,7 +131,9 @@ const MATRIX: &[Row] = &[
         probes: &[&["head probe"], &["cell probe"]],
         term: Full,
         html: Full,
-        txt: Full,
+        // Cells used to concatenate into "leftrighta1b1"; txt now separates
+        // them and breaks rows.
+        txt: OkWith(&[&["head probe | b"], &["cell probe | 2"]]),
         json: Full,
     },
     Row {
@@ -174,7 +181,8 @@ const MATRIX: &[Row] = &[
     Row {
         fixture: "math_frac",
         probes: &[&["frac"]],
-        term: Gap("render/math.rs deletes \\frac, leaving {a}{b}"),
+        // The terminal expands it; HTML keeps the source for KaTeX.
+        term: OkWith(&[&["a/b"]]),
         html: Full,
         txt: Full,
         json: Full,
@@ -284,7 +292,7 @@ fn missing(out: &str, probes: Probes) -> Vec<String> {
 fn check(row: &Row, target: &str, cell: Cell) {
     let out = render(target, row.fixture);
     let probes = match cell {
-        Cell::OkWith(p) => p,
+        Cell::OkWith(p) | Cell::Gap(p, _) => p,
         _ => row.probes,
     };
     let missing = missing(&out, probes);
@@ -296,7 +304,7 @@ fn check(row: &Row, target: &str, cell: Cell) {
             target,
             missing
         ),
-        Cell::Gap(why) => assert!(
+        Cell::Gap(_, why) => assert!(
             !missing.is_empty(),
             "{} / {} is recorded as a gap ({}) but everything survived \u{2014} \
              the gap is closed, so update MATRIX in tests/parity_test.rs",

@@ -1857,19 +1857,25 @@ fn extract_plain_text<'a>(root: &'a AstNode<'a>) -> String {
 
     let mut text = String::new();
     let mut last_was_block = false;
+    let mut first_cell_in_row = true;
 
     for edge in root.traverse() {
         let node = match edge {
             NodeEdge::Start(n) => n,
-            // A link's target is only useful after its label has been emitted.
             NodeEdge::End(n) => {
-                if let NodeValue::Link(link) = &n.data.borrow().value
-                    && !link.url.is_empty()
-                {
-                    text.push_str(" (");
-                    text.push_str(&link.url);
-                    text.push(')');
-                    last_was_block = false;
+                match &n.data.borrow().value {
+                    // A link's target is only useful after its label.
+                    NodeValue::Link(link) if !link.url.is_empty() => {
+                        text.push_str(" (");
+                        text.push_str(&link.url);
+                        text.push(')');
+                        last_was_block = false;
+                    }
+                    NodeValue::TableRow(_) => {
+                        text.push('\n');
+                        last_was_block = true;
+                    }
+                    _ => {}
                 }
                 continue;
             }
@@ -1890,6 +1896,19 @@ fn extract_plain_text<'a>(root: &'a AstNode<'a>) -> String {
                 }
                 text.push_str(&cb.literal);
                 last_was_block = true;
+            }
+            NodeValue::TableRow(_) => {
+                if !text.is_empty() && !text.ends_with('\n') {
+                    text.push('\n');
+                }
+                first_cell_in_row = true;
+            }
+            NodeValue::TableCell => {
+                if !first_cell_in_row {
+                    text.push_str(" | ");
+                }
+                first_cell_in_row = false;
+                last_was_block = false;
             }
             NodeValue::Math(m) => {
                 text.push_str(&m.literal);

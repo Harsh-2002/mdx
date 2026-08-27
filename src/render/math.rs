@@ -112,13 +112,76 @@ fn substitute_latex(input: &str) -> String {
     for &(pattern, replacement) in SUBSTITUTIONS {
         result = result.replace(pattern, replacement);
     }
-    // Strip common LaTeX commands that have no good Unicode equivalent
+    result = expand_fractions(&result);
+    // Wrappers with no visual effect in a terminal: drop the command, keep the
+    // argument.
     for cmd in &[
-        "\\frac", "\\text", "\\mathrm", "\\mathbf", "\\mathit", "\\left", "\\right",
+        "\\text", "\\mathrm", "\\mathbf", "\\mathit", "\\left", "\\right",
     ] {
         result = result.replace(cmd, "");
     }
     result
+}
+
+/// Rewrite `\frac{a}{b}` as `a/b`, parenthesising compound operands.
+///
+/// Stripping the command outright left `{a}{b}`, which reads as multiplication.
+fn expand_fractions(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(at) = rest.find("\\frac") {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + "\\frac".len()..];
+        match (
+            take_braced(after),
+            take_braced(after).and_then(|(_, r)| take_braced(r)),
+        ) {
+            (Some((num, _)), Some((den, tail))) => {
+                out.push_str(&wrap_operand(&expand_fractions(&num)));
+                out.push('/');
+                out.push_str(&wrap_operand(&expand_fractions(&den)));
+                rest = tail;
+            }
+            // Not the shape we understand; leave it alone rather than mangle it.
+            _ => {
+                out.push_str("\\frac");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Split a leading `{...}` group, honouring nesting.
+fn take_braced(s: &str) -> Option<(String, &str)> {
+    let s = s.strip_prefix('{')?;
+    let mut depth = 1usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((s[..i].to_string(), &s[i + 1..]));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Parenthesise unless the operand is unambiguous on its own: a single
+/// character, or a bare number. `a/2b` would otherwise read as `(a/2)b`.
+fn wrap_operand(s: &str) -> String {
+    let unambiguous = s.chars().count() == 1
+        || (!s.is_empty() && s.chars().all(|c| c.is_ascii_digit() || c == '.'));
+    if unambiguous {
+        s.to_string()
+    } else {
+        format!("({})", s)
+    }
 }
 
 /// Render a math node (inline or display) to the terminal.
@@ -227,4 +290,48 @@ fn render_display_math<W: Write>(
 
     ctx.needs_newline = true;
     Ok(())
+}
+
+#[cfg(test)]
+mod frac_tests {
+    use super::*;
+
+    #[test]
+    fn test_simple_fraction() {
+        assert_eq!(expand_fractions("\\frac{a}{b}"), "a/b");
+    }
+
+    #[test]
+    fn test_compound_operands_are_parenthesised() {
+        assert_eq!(expand_fractions("\\frac{a+1}{2b}"), "(a+1)/(2b)");
+    }
+
+    #[test]
+    fn test_nested_fractions() {
+        assert_eq!(expand_fractions("\\frac{\\frac{a}{b}}{c}"), "(a/b)/c");
+    }
+
+    #[test]
+    fn test_bare_numbers_need_no_parentheses() {
+        assert_eq!(expand_fractions("\\frac{1}{12}"), "1/12");
+    }
+
+    #[test]
+    fn test_surrounding_text_is_kept() {
+        assert_eq!(
+            expand_fractions("x = \\frac{1}{2} exactly"),
+            "x = 1/2 exactly"
+        );
+    }
+
+    #[test]
+    fn test_malformed_frac_is_left_alone() {
+        assert_eq!(expand_fractions("\\frac{a"), "\\frac{a");
+        assert_eq!(expand_fractions("\\frac"), "\\frac");
+    }
+
+    #[test]
+    fn test_no_frac_is_untouched() {
+        assert_eq!(expand_fractions("a + b"), "a + b");
+    }
 }
