@@ -9,7 +9,7 @@ use genpdfi::elements;
 use genpdfi::style;
 use genpdfi::{Element, Mm};
 
-use crate::parse::parse_markdown;
+use crate::parse::{CodeStyle, inline_text, parse_markdown};
 
 /// A4 content area dimensions (margins: 20/15/20/15mm from 210×297mm)
 #[cfg(feature = "images")]
@@ -525,7 +525,7 @@ fn extract_title<'a>(root: &'a AstNode<'a>) -> Option<String> {
             && h.level == 1
         {
             drop(data);
-            let title = collect_text(node);
+            let title = inline_text(node, CodeStyle::Bare);
             if !title.is_empty() {
                 return Some(title);
             }
@@ -900,7 +900,7 @@ fn render_block<'a>(
             }
 
             doc.push(elements::Break::new(1.5_f32));
-            let size = fit_heading_size(doc, &collect_text(node), size);
+            let size = fit_heading_size(doc, &inline_text(node, CodeStyle::Bare), size);
             let mut p = elements::Paragraph::default();
             let base = style::Style::new()
                 .with_font_size(size)
@@ -1132,14 +1132,14 @@ fn collect_inline<'a>(
                 let url = link.url.clone();
                 drop(data);
                 let link_style = base.with_color(style::Color::Rgb(0, 95, 204)).underline();
-                let text = collect_text(child);
+                let text = inline_text(child, CodeStyle::Bare);
                 p.push_link(text, url, link_style);
             }
             NodeValue::Image(img) => {
                 let title = img.title.clone();
                 drop(data);
                 // Prefer alt text from children, fall back to title attribute
-                let text = collect_text(child);
+                let text = inline_text(child, CodeStyle::Bare);
                 let text = if text.is_empty() { title } else { text };
                 if !text.is_empty() {
                     p.push_styled(format!("[{}]", text), base.italic());
@@ -1224,22 +1224,6 @@ fn truncate_line(line: &str, max_chars: usize) -> String {
     } else {
         line.to_string()
     }
-}
-
-/// Collect all plain text from a node tree.
-fn collect_text<'a>(node: &'a AstNode<'a>) -> String {
-    let mut s = String::new();
-    for child in node.descendants() {
-        let data = child.data.borrow();
-        if let NodeValue::Text(t) = &data.value {
-            s.push_str(t);
-        } else if let NodeValue::Code(c) = &data.value {
-            s.push_str(&c.literal);
-        } else if matches!(&data.value, NodeValue::SoftBreak) {
-            s.push(' ');
-        }
-    }
-    s
 }
 
 fn render_list<'a>(
@@ -1463,7 +1447,7 @@ fn render_footnotes<'a>(
         if let NodeValue::FootnoteDefinition(fd) = &data.value {
             let name = fd.name.clone();
             drop(data);
-            let text = collect_text(node);
+            let text = inline_text(node, CodeStyle::Bare);
             footnotes.push((name, text));
         }
     }

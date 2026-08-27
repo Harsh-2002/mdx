@@ -1,7 +1,7 @@
 use comrak::nodes::{AstNode, NodeValue};
 
 use crate::cli::TocArgs;
-use crate::parse::parse_markdown;
+use crate::parse::{CodeStyle, inline_text, parse_markdown};
 
 struct Heading {
     level: u8,
@@ -38,7 +38,7 @@ fn collect_headings<'a>(root: &'a AstNode<'a>) -> Vec<Heading> {
     for node in root.descendants() {
         let data = node.data.borrow();
         if let NodeValue::Heading(ref heading) = data.value {
-            let text = extract_text(node);
+            let text = inline_text(node, CodeStyle::Fenced);
             if !text.is_empty() {
                 let anchor = anchorizer.anchorize(&text);
                 headings.push(Heading {
@@ -51,22 +51,4 @@ fn collect_headings<'a>(root: &'a AstNode<'a>) -> Vec<Heading> {
     }
 
     headings
-}
-
-fn extract_text<'a>(node: &'a AstNode<'a>) -> String {
-    let mut text = String::new();
-    for child in node.descendants() {
-        let data = child.data.borrow();
-        match &data.value {
-            NodeValue::Text(t) => text.push_str(t),
-            NodeValue::Code(c) => {
-                text.push('`');
-                text.push_str(&c.literal);
-                text.push('`');
-            }
-            NodeValue::SoftBreak | NodeValue::LineBreak => text.push(' '),
-            _ => {}
-        }
-    }
-    text
 }
