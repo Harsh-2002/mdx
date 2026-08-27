@@ -50,11 +50,11 @@ fn start_serve(args: &[&str]) -> ServeProcess {
             Ok(0) | Err(_) => break,
             Ok(_) => {
                 // Lines look like: "  Serving foo.md at http://127.0.0.1:PORT"
-                if let Some(idx) = line.rfind(':') {
-                    if let Ok(p) = line[idx + 1..].trim().parse::<u16>() {
-                        port = p;
-                        break;
-                    }
+                if let Some(idx) = line.rfind(':')
+                    && let Ok(p) = line[idx + 1..].trim().parse::<u16>()
+                {
+                    port = p;
+                    break;
                 }
             }
         }
@@ -204,6 +204,75 @@ fn http_post(url: &str, body: &str) -> (u16, String) {
     (0, String::new())
 }
 
+/// A real 68-byte 1x1 transparent PNG. The bytes are not valid UTF-8, so
+/// a byte-exact round trip proves the server did not mangle them.
+const TINY_PNG: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+    0x89, 0x00, 0x00, 0x00, 0x0B, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0x60, 0x00, 0x02, 0x00,
+    0x00, 0x05, 0x00, 0x01, 0xE9, 0xFA, 0xDC, 0xD8, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
+    0xAE, 0x42, 0x60, 0x82,
+];
+
+/// Returns (status, body_bytes, content_type).
+fn http_get_bytes(url: &str) -> (u16, Vec<u8>, Option<String>) {
+    let agent = http_agent();
+    for attempt in 0..3 {
+        match agent.get(url).call() {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let ct = resp
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| v.to_string());
+                let body = resp.into_body().read_to_vec().unwrap_or_default();
+                return (status, body, ct);
+            }
+            Err(ureq::Error::StatusCode(code)) => return (code, Vec::new(), None),
+            Err(_) if attempt < 2 => {
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            Err(_) => return (0, Vec::new(), None),
+        }
+    }
+    (0, Vec::new(), None)
+}
+
+/// POST a one-part multipart/form-data body, the shape the editor's
+/// drag-and-drop uploader sends.
+fn http_post_multipart_png(url: &str, filename: &str, data: &[u8]) -> (u16, String) {
+    let boundary = "----mdxtestboundary";
+    let mut body: Vec<u8> = Vec::new();
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(
+        format!(
+            "Content-Disposition: form-data; name=\"file\"; filename=\"{}\"\r\n",
+            filename
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(b"Content-Type: image/png\r\n\r\n");
+    body.extend_from_slice(data);
+    body.extend_from_slice(format!("\r\n--{}--\r\n", boundary).as_bytes());
+
+    let agent = http_agent();
+    let content_type = format!("multipart/form-data; boundary={}", boundary);
+    match agent
+        .post(url)
+        .header("content-type", content_type.as_str())
+        .send(&body[..])
+    {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let text = resp.into_body().read_to_string().unwrap_or_default();
+            (status, text)
+        }
+        Err(ureq::Error::StatusCode(code)) => (code, String::new()),
+        Err(_) => (0, String::new()),
+    }
+}
+
 fn write_tmp(name: &str, content: &str) -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
     static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -212,6 +281,71 @@ fn write_tmp(name: &str, content: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(unique_name);
     std::fs::write(&path, content).unwrap();
     path
+}
+
+/// Start `mdx serve` and capture the stderr banner (everything up to and
+/// including the "Press Ctrl+C" line) alongside the running process.
+fn start_serve_with_banner(args: &[&str]) -> (ServeProcess, Vec<String>) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .arg("serve")
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to start mdx serve");
+
+    let stderr = child.stderr.take().unwrap();
+    let mut reader = BufReader::new(stderr);
+    let mut banner = Vec::new();
+    let mut port = 0u16;
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                banner.push(line.trim_end().to_string());
+                if port == 0
+                    && let Some(idx) = line.rfind(':')
+                    && let Ok(p) = line[idx + 1..].trim().parse::<u16>()
+                {
+                    port = p;
+                }
+                if line.contains("Press Ctrl+C") {
+                    break;
+                }
+            }
+        }
+    }
+
+    assert!(port > 0, "Failed to detect serve port");
+
+    let drain = std::thread::spawn(move || {
+        let mut buf = String::new();
+        while reader.read_line(&mut buf).unwrap_or(0) > 0 {
+            buf.clear();
+        }
+    });
+
+    std::thread::sleep(Duration::from_millis(500));
+
+    let srv = ServeProcess {
+        child,
+        port,
+        _stderr_drain: Some(drain),
+    };
+    (srv, banner)
+}
+
+/// This machine's non-loopback IPv4, if it has one. Probes a UDP socket, which
+/// picks a route without sending traffic; None when there is no default route
+/// (offline CI), so the caller can skip.
+fn lan_ipv4() -> Option<std::net::IpAddr> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("8.8.8.8:80").ok()?;
+    let ip = sock.local_addr().ok()?.ip();
+    if ip.is_loopback() { None } else { Some(ip) }
 }
 
 // ── Single file serve ────────────────────────────────────────────────
@@ -912,4 +1046,400 @@ fn test_serve_multi_content_negotiation() {
     assert!(!body.contains("<!DOCTYPE"), "Should not contain HTML");
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_serve_put_source_rejects_traversal() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = std::env::temp_dir().join("md-serve-put-traversal");
+    let _ = std::fs::remove_dir_all(&root);
+    let served = root.join("served");
+    std::fs::create_dir_all(&served).unwrap();
+    std::fs::write(served.join("index.md"), "# Put\n").unwrap();
+
+    let srv = start_serve(&[served.to_str().unwrap()]);
+
+    // Percent-encoded and raw forms both decode to a traversal before the
+    // handler sees them.
+    for probe in ["/%2e%2e%2fescaped.md/source", "/..%2fescaped.md/source"] {
+        let agent = http_agent();
+        let _ = agent.put(&srv.url(probe)).send("PWNED");
+    }
+
+    assert!(
+        !root.join("escaped.md").exists(),
+        "PUT /{{file}}/source must not write outside the served directory"
+    );
+    // The legitimate path must still work.
+    let code = http_put(&srv.url("/index.md/source"), "# Edited\n");
+    assert_eq!(code, 200, "normal source write must still succeed");
+    assert_eq!(
+        std::fs::read_to_string(served.join("index.md")).unwrap(),
+        "# Edited\n"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// ── Raw HTML sanitising ──────────────────────────────────────────────
+
+const XSS_DOC: &str =
+    "# Untrusted\n\n<script>alert('pwned')</script>\n\nInline <img src=x onerror=alert(1)> tail.\n";
+
+#[test]
+fn test_serve_strips_raw_html_by_default() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = write_tmp("md-serve-xss.md", XSS_DOC);
+    let srv = start_serve(&[tmp.to_str().unwrap()]);
+
+    let (status, body) = http_get(&srv.url("/"));
+    assert_eq!(status, 200);
+    assert!(body.contains("Untrusted"), "Document should still render");
+    assert!(
+        !body.contains("alert('pwned')"),
+        "A <script> in markdown must not reach the served page"
+    );
+    assert!(
+        !body.contains("onerror=alert(1)"),
+        "Inline raw HTML must not reach the served page"
+    );
+
+    // /raw has no page chrome, so it is the cleanest place to check the shape.
+    let (status, raw) = http_get(&srv.url("/raw"));
+    assert_eq!(status, 200);
+    assert!(
+        raw.contains("<!-- raw HTML omitted -->"),
+        "Raw HTML should be replaced by comrak's omitted marker, got: {}",
+        raw
+    );
+    assert!(
+        raw.contains("Inline") && raw.contains("tail."),
+        "Text around the stripped tag should survive, got: {}",
+        raw
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_serve_unsafe_html_renders_raw_html() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = write_tmp("md-serve-unsafe-html.md", XSS_DOC);
+    let srv = start_serve(&["--unsafe-html", tmp.to_str().unwrap()]);
+
+    let (status, raw) = http_get(&srv.url("/raw"));
+    assert_eq!(status, 200);
+    // GFM's tagfilter stays on, so --unsafe-html renders raw HTML the way
+    // GitHub does: ordinary tags pass, script is neutralised.
+    assert!(
+        raw.contains("<img src=x onerror=alert(1)>"),
+        "--unsafe-html should pass ordinary raw HTML through, got: {}",
+        raw
+    );
+    assert!(
+        raw.contains("&lt;script>"),
+        "tagfilter should neutralise script even with --unsafe-html, got: {}",
+        raw
+    );
+    assert!(
+        !raw.contains("<!-- raw HTML omitted -->"),
+        "--unsafe-html should omit nothing, got: {}",
+        raw
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+// ── Bind address ─────────────────────────────────────────────────────
+
+#[test]
+fn test_serve_default_bind_is_loopback_only() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = write_tmp("md-serve-bind.md", "# Bind Test");
+    let srv = start_serve(&[tmp.to_str().unwrap()]);
+
+    // Positive control: the server is up, on loopback.
+    let (status, _) = http_get(&srv.url("/"));
+    assert_eq!(status, 200, "Server should be reachable on 127.0.0.1");
+
+    // Same server, same port, addressed by this machine's LAN IP.
+    match lan_ipv4() {
+        Some(ip) => {
+            let addr = std::net::SocketAddr::new(ip, srv.port);
+            let err = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2))
+                .err()
+                .map(|e| e.kind());
+            assert!(
+                err.is_some(),
+                "Default bind must not accept connections at {}",
+                addr
+            );
+            // A timeout means the packet was dropped by a firewall, which says
+            // nothing about what the process bound. Windows CI does this. Skip
+            // rather than claim a pass, and skip rather than fail the build on
+            // a property of the network.
+            if err == Some(std::io::ErrorKind::TimedOut) {
+                eprintln!(
+                    "  Inconclusive: {} timed out (firewall DROP), not asserting",
+                    addr
+                );
+            }
+        }
+        None => eprintln!("  Skipping LAN check: no non-loopback IPv4 on this machine"),
+    }
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_serve_banner_hides_network_url_by_default() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = write_tmp("md-serve-banner.md", "# Banner Test");
+    let (_srv, banner) = start_serve_with_banner(&[tmp.to_str().unwrap()]);
+    let text = banner.join("\n");
+
+    assert!(
+        text.contains("Local:   http://127.0.0.1:"),
+        "Banner should advertise the loopback URL, got: {}",
+        text
+    );
+    assert!(
+        !text.contains("Network:"),
+        "A loopback bind must not advertise a LAN URL, got: {}",
+        text
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_serve_host_wildcard_warns_about_exposure() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = write_tmp("md-serve-host.md", "# Host Test");
+    let (srv, banner) = start_serve_with_banner(&["--host", "0.0.0.0", tmp.to_str().unwrap()]);
+    let text = banner.join("\n");
+
+    assert!(
+        text.contains("Warning:"),
+        "--host 0.0.0.0 must warn that the server is unauthenticated, got: {}",
+        text
+    );
+
+    // And it is still reachable over loopback.
+    let (status, _) = http_get(&srv.url("/"));
+    assert_eq!(status, 200);
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_serve_rejects_invalid_host() {
+    let out = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["serve", "--host", "not-an-ip"])
+        .arg(write_tmp("md-serve-badhost.md", "# x").to_str().unwrap())
+        .output()
+        .expect("Failed to run mdx serve");
+    assert!(!out.status.success(), "Invalid --host should exit non-zero");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Invalid --host"),
+        "Should explain the bad host, got: {}",
+        stderr
+    );
+}
+
+// ── Static assets ────────────────────────────────────────────────────
+
+#[test]
+fn test_serve_static_asset_single_file_mode() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join("md-serve-static-single");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    let note = dir.join("note.md");
+    std::fs::write(&note, "# Shot\n\n![](assets/shot.png)\n").unwrap();
+    std::fs::write(dir.join("assets").join("shot.png"), TINY_PNG).unwrap();
+
+    let srv = start_serve(&[note.to_str().unwrap()]);
+
+    let (status, body, ct) = http_get_bytes(&srv.url("/assets/shot.png"));
+    assert_eq!(status, 200, "asset next to the served file should resolve");
+    assert_eq!(
+        ct.as_deref().unwrap_or(""),
+        "image/png",
+        "Content-Type should be image/png, got: {:?}",
+        ct
+    );
+    assert_eq!(body, TINY_PNG, "image bytes should round-trip unchanged");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_serve_static_asset_directory_mode() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join("md-serve-static-dir");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(dir.join("index.md"), "# Dir\n\n![](logo.png)\n").unwrap();
+    std::fs::write(dir.join("logo.png"), TINY_PNG).unwrap();
+    std::fs::write(dir.join("assets").join("photo.jpg"), TINY_PNG).unwrap();
+    std::fs::write(dir.join("secrets.txt"), "TOP-SECRET-MARKER").unwrap();
+
+    let srv = start_serve(&[dir.to_str().unwrap()]);
+
+    // A root-level image also matches the /{file} markdown route, so this
+    // asserts the markdown route falls through to the static handler.
+    let (status, body, ct) = http_get_bytes(&srv.url("/logo.png"));
+    assert_eq!(status, 200, "root-level image should be served");
+    assert_eq!(ct.as_deref().unwrap_or(""), "image/png");
+    assert_eq!(body, TINY_PNG, "image bytes should round-trip unchanged");
+
+    // Nested asset: the path the drag-and-drop uploader produces.
+    let (status, _, ct) = http_get_bytes(&srv.url("/assets/photo.jpg"));
+    assert_eq!(status, 200, "nested asset should be served");
+    assert_eq!(ct.as_deref().unwrap_or(""), "image/jpeg");
+
+    // The markdown route still wins for markdown.
+    let (status, page) = http_get(&srv.url("/index.md"));
+    assert_eq!(status, 200);
+    assert!(
+        page.contains("<!DOCTYPE html>"),
+        "markdown route must not be shadowed by the static handler"
+    );
+
+    // Non-asset files in the served directory are not published.
+    let (status, body, _) = http_get_bytes(&srv.url("/secrets.txt"));
+    assert_ne!(status, 200, "non-asset extensions must not be served");
+    assert!(
+        !String::from_utf8_lossy(&body).contains("TOP-SECRET-MARKER"),
+        "non-asset file content must not leak"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_serve_static_rejects_path_traversal() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = std::env::temp_dir().join("md-serve-static-traversal");
+    let _ = std::fs::remove_dir_all(&root);
+    let served = root.join("served");
+    std::fs::create_dir_all(served.join("assets")).unwrap();
+    std::fs::write(served.join("index.md"), "# Traversal\n").unwrap();
+    // The target lives OUTSIDE the served directory, and uses an
+    // allowlisted extension so only the containment check can stop it.
+    std::fs::write(root.join("secret.png"), "TOP-SECRET-MARKER").unwrap();
+
+    let srv = start_serve(&[served.to_str().unwrap()]);
+
+    // Percent-encoded so no HTTP client normalises the `..` away before
+    // the request reaches the server. The first form is a single raw path
+    // segment, so it is routed through /{file} and must still be refused
+    // after axum percent-decodes it.
+    let attempts = [
+        "/%2e%2e%2fsecret.png",
+        "/assets/%2e%2e%2f%2e%2e%2fsecret.png",
+        "/assets/..%2f..%2fsecret.png",
+        "/%2e%2e%5csecret.png",
+    ];
+    for attempt in attempts {
+        let (status, body, _) = http_get_bytes(&srv.url(attempt));
+        assert_ne!(status, 200, "traversal {} should not succeed", attempt);
+        assert!(
+            !String::from_utf8_lossy(&body).contains("TOP-SECRET-MARKER"),
+            "traversal {} leaked a file outside the served directory",
+            attempt
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_serve_static_rejects_symlink_escape() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = std::env::temp_dir().join("md-serve-static-symlink");
+    let _ = std::fs::remove_dir_all(&root);
+    let served = root.join("served");
+    std::fs::create_dir_all(&served).unwrap();
+    std::fs::write(served.join("index.md"), "# Symlink\n").unwrap();
+    std::fs::write(root.join("outside.png"), "OUTSIDE-MARKER").unwrap();
+    std::os::unix::fs::symlink(root.join("outside.png"), served.join("leak.png")).unwrap();
+
+    let srv = start_serve(&[served.to_str().unwrap()]);
+
+    let (status, body, _) = http_get_bytes(&srv.url("/leak.png"));
+    assert_ne!(
+        status, 200,
+        "a symlink pointing outside the served directory must not be served"
+    );
+    assert!(
+        !String::from_utf8_lossy(&body).contains("OUTSIDE-MARKER"),
+        "symlink escape leaked a file outside the served directory"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn test_serve_upload_then_fetch_round_trip() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join("md-serve-static-upload");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let note = dir.join("note.md");
+    std::fs::write(&note, "# Upload\n").unwrap();
+
+    let srv = start_serve(&[note.to_str().unwrap()]);
+
+    let (status, json) = http_post_multipart_png(&srv.url("/upload"), "shot.png", TINY_PNG);
+    assert_eq!(status, 200, "upload should succeed, got body: {}", json);
+    assert!(
+        json.contains("\"path\":\"assets/"),
+        "upload should return an assets/ path, got: {}",
+        json
+    );
+
+    // Fetch exactly the URL the editor inserts as ![](<path>).
+    let rel = json
+        .split("\"path\":\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .expect("upload response should contain a path")
+        .to_string();
+
+    let (status, body, ct) = http_get_bytes(&srv.url(&format!("/{}", rel)));
+    assert_eq!(status, 200, "uploaded image at /{} should be served", rel);
+    assert_eq!(ct.as_deref().unwrap_or(""), "image/png");
+    assert_eq!(body, TINY_PNG, "served bytes should match the upload");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_serve_upload_rejects_traversal_filename() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = std::env::temp_dir().join("md-serve-static-upload-evil");
+    let _ = std::fs::remove_dir_all(&root);
+    let served = root.join("served");
+    std::fs::create_dir_all(&served).unwrap();
+    let note = served.join("note.md");
+    std::fs::write(&note, "# Upload\n").unwrap();
+
+    let srv = start_serve(&[note.to_str().unwrap()]);
+
+    let (status, json) = http_post_multipart_png(&srv.url("/upload"), "../../evil.png", TINY_PNG);
+    assert_eq!(status, 200, "upload should still succeed, got: {}", json);
+    assert!(
+        !root.join("evil.png").exists() && !served.join("evil.png").exists(),
+        "upload must not write outside the assets directory"
+    );
+    assert!(
+        served.join("assets").join("evil.png").exists(),
+        "upload should be stored under assets/ with the path stripped"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }

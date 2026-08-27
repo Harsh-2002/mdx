@@ -1,6 +1,6 @@
 # mdx
 
-A fast terminal markdown renderer and toolchain built in Rust. Renders markdown with syntax highlighting, tables, and images — directly in your terminal. In browser preview mode (`mdx serve`), also supports math (KaTeX) and mermaid diagrams. Includes a formatter, linter, diff viewer, full-text search, format converter, web page fetcher, and static site generator.
+A fast terminal markdown renderer and toolchain built in Rust. Renders markdown with syntax highlighting, tables, and images — directly in your terminal, with math rendered as Unicode. In browser preview mode (`mdx serve`), math is typeset with KaTeX and mermaid diagrams render as interactive SVG. Includes a formatter, linter, diff viewer, full-text search, format converter, web page fetcher, and static site generator.
 
 ## Install
 
@@ -16,7 +16,7 @@ curl -fsSL https://raw.githubusercontent.com/Harsh-2002/mdx/main/install.sh | sh
 irm https://raw.githubusercontent.com/Harsh-2002/mdx/main/install.ps1 | iex
 ```
 
-Installs the binary and sets up shell completions automatically.
+Installs the binary, and sets up shell completions for bash, zsh and fish. Other shells are skipped.
 
 **From source (all platforms):**
 
@@ -64,16 +64,23 @@ mdx completions install              # install shell completions
 
 ## Options
 
+Accepted before or after any subcommand — `mdx --plain fetch URL` and `mdx fetch URL --plain` are the same command.
+
+| Flag | Description | Honored by |
+|------|-------------|------------|
+| `-w, --width <N>` | Output width in columns | terminal output |
+| `--color auto\|always\|never` | Color output mode | terminal output |
+| `--plain` | Plain text, no colors or box-drawing | terminal output |
+| `--theme dark\|light` | Color theme | terminal, serve, watch, present, publish, `export --to html` |
+| `--syntax-theme <NAME>` | Syntax highlighting theme | every target that highlights code |
+| `--css <FILE>` | Custom CSS to inject | serve, `export --to html`, publish |
+
+### Top level only
+
 | Flag | Description |
 |------|-------------|
-| `-w, --width <N>` | Output width in columns |
-| `-p, --pager` | Pipe through `less` (or `more` on Windows) |
-| `--color auto\|always\|never` | Color output mode |
-| `--plain` | Plain text, no colors or box-drawing |
-| `--theme dark\|light` | Color theme |
-| `--syntax-theme <NAME>` | Syntax highlighting theme |
+| `-p, --pager` | Pipe through `less` (or `more` on Windows). `mdx fetch` has its own `-p`; `mdx serve` uses `-p` for `--port` |
 | `--list-syntax-themes` | List available syntax themes |
-| `--css <FILE>` | Custom CSS for HTML/serve output |
 | `--generate-man` | Generate man page |
 
 ## Commands
@@ -87,17 +94,25 @@ mdx serve file.md                    # single file with live reload
 mdx serve ./notes/                   # directory as card grid, click to view
 mdx serve a.md b.md c.md             # multiple files with sidebar navigation
 mdx serve file.md -p 8080            # specify port
-mdx serve file.md --css custom.css   # inject custom CSS
+mdx --css custom.css serve file.md   # inject custom CSS
+mdx serve file.md --host 0.0.0.0     # expose on your LAN (see warning below)
+mdx serve file.md --unsafe-html      # render raw HTML in the document
 ```
 
 All modes include:
 - Built-in markdown editor (toggle with pencil icon or `e`)
 - Search & replace in editor (`Ctrl+F` / `Ctrl+H`)
-- Drag & drop image upload (or paste from clipboard)
+- Drag & drop image upload (or paste from clipboard) — uploads land in `assets/` next to the document
+- Local images served from the document's directory, so `![](assets/shot.png)` and `![](diagram.png)` render
 - Print / PDF export button (uses browser's native print)
 - Dark/light theme toggle
 - Table of contents sidebar
 - **Markdown for Agents** — AI agents sending `Accept: text/markdown` get raw markdown with `X-Markdown-Tokens` and `Vary: Accept` headers instead of HTML
+
+**Security defaults**
+
+- Binds `127.0.0.1` — the preview is reachable only from this machine. `--host 0.0.0.0` exposes it to your network, and the server is unauthenticated: anyone who can reach the port can read your files, overwrite them, create new ones and upload into `./assets`.
+- Raw HTML inside markdown is dropped, so a `<script>` in a downloaded or agent-written document cannot run in your browser. `--unsafe-html` renders it the way GitHub does — `<div>`, `<details>` and badge tables pass, while GFM's tagfilter still neutralises `<script>`, `<iframe>` and friends. `mdx export` is different: it writes a file you open yourself, so it converts your document faithfully, tags and all. This affects READMEs: `<details>` collapsibles and `<div align="center">` logo/badge blocks are dropped whole — tags *and* the content between them — because an HTML block runs to the next blank line. Markdown images, tables, code fences, math, mermaid and GFM alerts are unaffected.
 
 | Key | Action |
 |-----|--------|
@@ -137,20 +152,33 @@ mdx fetch -o article.md https://example.com  # save to file
 mdx fetch https://example.com | llm        # pipe to LLM
 ```
 
+| Flag | Description |
+|------|-------------|
+| `-o, --output <FILE>` | Write to a file instead of stdout |
+| `--raw` | Convert the whole page, skipping readability extraction |
+| `--metadata` | Prepend YAML front matter (title, author, date, source) |
+| `--tokens` | Print an estimated token count to stderr |
+| `-p, --pager` | Page the rendered output |
+
+**`mdx fetch <url>` and `mdx <url>` are different.** `fetch` downloads a web *page* and extracts the article; `mdx <url>` expects the URL to serve a markdown file and renders it as-is.
+
 ### `mdx export` — Format conversion
 
-Export markdown to other formats. PDF and EPUB write to a file (defaults to input filename with new extension). HTML, JSON, and TXT print to stdout.
+Export markdown to other formats. HTML output is a single file, but math and mermaid load KaTeX and mermaid.js from a CDN, so those two need a network connection to display. `-o` writes to a file in every format; without it, HTML, JSON and TXT print to stdout while PDF and EPUB default to the input name with a new extension.
 
 ```bash
-mdx export --to html README.md              # standalone HTML page
+mdx export --to html README.md              # single-file HTML page
 mdx export --to pdf README.md               # PDF document (native, no browser needed)
 mdx export --to epub README.md              # EPUB e-book (Apple Books, Kobo, Calibre)
 mdx export --to json README.md              # AST as JSON
 mdx export --to txt README.md               # plain text (strip formatting)
 mdx export --to pdf -o out.pdf file.md      # custom output path
+mdx export --to pdf --allow-remote-render f.md  # let kroki.io render mermaid
 ```
 
 EPUB export embeds local images, maps front matter to EPUB metadata (title, tags), and preserves syntax-highlighted code blocks.
+
+PDF export renders mermaid diagrams with the local [mmdc](https://github.com/mermaid-js/mermaid-cli) CLI (`npm install -g @mermaid-js/mermaid-cli`). If mmdc is not installed, the diagram is written into the PDF as a labelled source block and the export still succeeds. Pass `--allow-remote-render` to fall back to the kroki.io web API instead — this uploads your diagram source to a third-party server, so it is off by default.
 
 ### `mdx stats` — Document statistics
 
@@ -179,6 +207,8 @@ mdx toc --depth 6 README.md         # all heading levels
 ### `mdx fmt` — Markdown formatter
 
 Normalizes markdown formatting. Use `--check` in CI to ensure consistent style.
+
+Wraps at a fixed 80 columns (not the global `--width`) so that formatting a file is reproducible regardless of the terminal it runs in. Parses the same markdown as the renderer, GFM alerts (`> [!NOTE]`) included; note that `> [!note]` is normalized to `> [!NOTE]`.
 
 ```bash
 mdx fmt README.md                # print formatted to stdout
@@ -267,26 +297,51 @@ mdx completions fish                 # print fish completions to stdout
 mdx completions powershell           # print PowerShell completions to stdout
 ```
 
+## Markdown support
+
+Conformance target is GFM plus the extensions technical documentation actually uses. This table is generated from `tests/parity_test.rs`, which fails if a cell drifts.
+
+| Construct | Terminal | HTML / serve | txt | JSON |
+|---|---|---|---|---|
+| Headings, emphasis, strikethrough | ✅ | ✅ | ✅ | ✅ |
+| Inline code, code blocks | ✅ | ✅ | ✅ | ✅ |
+| Links, autolinks | ✅ | ✅ | ✅ | ✅ |
+| Images | ✅ | ✅ | alt text only | ✅ |
+| Lists, ordered lists, task lists | ✅ | ✅ | ✅ | ✅ |
+| Tables | ✅ | ✅ | ✅ | ✅ |
+| Block quotes, GFM alerts | ✅ | ✅ | ✅ | ✅ |
+| Footnotes, inline footnotes | ✅ | ✅ | ✅ | ✅ |
+| Math (inline and display) | Unicode | KaTeX | ✅ | ✅ |
+| Mermaid | source | SVG | ✅ | ✅ |
+| Description lists | ✅ | ✅ | ✅ | ✅ |
+| `==highlight==`, `^superscript^` | ✅ | ✅ | ✅ | ✅ |
+| `[[wikilinks]]` | ✅ | ✅ | ✅ | ✅ |
+| Raw HTML | ✅ | opt-in | ✅ | ✅ |
+| Front matter | stripped | stripped | stripped | ✅ |
+
+PDF and EPUB render the same document model; they are not in the table because their output is binary rather than text-comparable.
+
 ## Features
 
 - **Syntax highlighting** — language-aware code blocks via syntect
 - **Tables** — full GFM table rendering with alignment and cell wrapping
 - **Mermaid diagrams** — rendered as interactive SVG in browser preview via mermaid.js
-- **Math** — inline `$...$` and display `$$...$$` via KaTeX in browser preview
+- **Math** — inline `$...$` and display `$$...$$`; KaTeX in browser preview, Unicode in the terminal (`\frac{a}{b}` renders as `a/b`)
+- **Docs extensions** — description lists, `==highlight==`, `^superscript^`, `[[wikilinks]]` and inline footnotes, on top of GFM
 - **Images** — inline image rendering in supported terminals (iTerm2, kitty)
-- **URL fetching** — render markdown directly from URLs
+- **URL fetching** — `mdx <url>` renders a markdown file from a URL; use `mdx fetch <url>` for web *pages*, which extracts the article
 - **Web page extraction** — `mdx fetch` extracts article content as clean markdown, with MFA content negotiation
 - **Markdown for Agents** — `mdx serve` responds with raw markdown when agents send `Accept: text/markdown`
 - **Live reload** — `mdx serve` opens a browser preview that updates on file changes
 - **Built-in editor** — toggle a markdown editor in the browser, saves back to disk
 - **Search & replace** — find and replace text in the editor with regex support
-- **Image upload** — drag & drop or paste images into the editor
+- **Image upload** — drag & drop or paste images into the editor; images and other local assets are served from the document's directory
 - **Print / PDF** — browser-native print with clean print-optimized CSS
 - **Directory mode** — `mdx serve ./dir/` shows a file index with card grid
 - **Multi-file mode** — `mdx serve a.md b.md` with sidebar file navigation
 - **Dark/light theme** — toggle with button or `t` key, persisted in localStorage
 - **Full-text search** — BM25-ranked search across markdown files with `mdx search`
-- **Slide presentation** — `mdx present` splits on `---` for terminal slides
+- **Slide presentation** — `mdx present` splits on `---` for terminal slides, ignoring `---` inside code blocks and front matter
 - **ToC generation** — `mdx toc` extracts headings with depth control
 - **Document stats** — word count, reading time, heading/link/image counts
 - **Formatter** — normalize markdown style with `mdx fmt`
@@ -334,7 +389,7 @@ Built on these libraries:
 | [textwrap](https://github.com/mgeisler/textwrap) | Text wrapping |
 | [image](https://github.com/image-rs/image) | Image decoding (PNG, JPEG, GIF, WebP) |
 | [genpdfi](https://github.com/theiskaa/genpdfi) | PDF generation |
-| [markdown2pdf](https://github.com/theiskaa/markdown2pdf) | Markdown to PDF conversion |
+| [markdown2pdf](https://github.com/theiskaa/markdown2pdf) | PDF font loading |
 | [epub-builder](https://github.com/lise-henry/epub-builder) | EPUB e-book generation |
 | [ureq](https://github.com/algesten/ureq) | HTTP client (URL fetching) |
 | [dom_smoothie](https://github.com/niklak/dom_smoothie) | Web article extraction (Readability) |

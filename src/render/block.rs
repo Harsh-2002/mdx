@@ -306,3 +306,26 @@ pub fn end_alert(ctx: &mut RenderContext<'_>) {
     ctx.blockquote_depth = ctx.blockquote_depth.saturating_sub(1);
     ctx.rebuild_indent();
 }
+
+pub fn start_description_term<W: Write>(
+    w: &mut W,
+    ctx: &mut RenderContext<'_>,
+) -> std::io::Result<()> {
+    ctx.write_indent(w)?;
+    ctx.style_stack.push(ctx.theme.bold.clone());
+    Ok(())
+}
+
+pub fn end_description_term(ctx: &mut RenderContext<'_>) {
+    ctx.style_stack.pop();
+}
+
+pub fn start_description_details(ctx: &mut RenderContext<'_>) {
+    ctx.indent_level += 1;
+    ctx.rebuild_indent();
+}
+
+pub fn end_description_details(ctx: &mut RenderContext<'_>) {
+    ctx.indent_level = ctx.indent_level.saturating_sub(1);
+    ctx.rebuild_indent();
+}

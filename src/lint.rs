@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use comrak::nodes::{AstNode, NodeValue};
 
-use crate::parse::parse_markdown;
+use crate::parse::{CodeStyle, inline_text, parse_markdown};
 
 pub struct LintArgs {
     pub file: String,
@@ -84,7 +84,7 @@ fn check_duplicate_headings<'a>(root: &'a AstNode<'a>, issues: &mut Vec<Issue>) 
     for node in root.descendants() {
         let data = node.data.borrow();
         if let NodeValue::Heading(_) = data.value {
-            let text = extract_text(node);
+            let text = inline_text(node, CodeStyle::Bare);
             if !text.is_empty() && !seen.insert(text.clone()) {
                 issues.push(Issue {
                     line: data.sourcepos.start.line,
@@ -99,7 +99,7 @@ fn check_image_alt_text<'a>(root: &'a AstNode<'a>, issues: &mut Vec<Issue>) {
     for node in root.descendants() {
         let data = node.data.borrow();
         if let NodeValue::Image(ref img) = data.value {
-            let alt = extract_text(node);
+            let alt = inline_text(node, CodeStyle::Bare);
             if alt.trim().is_empty() && img.title.is_empty() {
                 issues.push(Issue {
                     line: data.sourcepos.start.line,
@@ -120,15 +120,4 @@ fn check_trailing_whitespace(content: &str, issues: &mut Vec<Issue>) {
             });
         }
     }
-}
-
-fn extract_text<'a>(node: &'a AstNode<'a>) -> String {
-    let mut text = String::new();
-    for child in node.descendants() {
-        let data = child.data.borrow();
-        if let NodeValue::Text(ref t) = data.value {
-            text.push_str(t);
-        }
-    }
-    text
 }

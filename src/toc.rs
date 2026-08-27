@@ -1,11 +1,12 @@
 use comrak::nodes::{AstNode, NodeValue};
 
 use crate::cli::TocArgs;
-use crate::parse::parse_markdown;
+use crate::parse::{CodeStyle, inline_text, parse_markdown};
 
 struct Heading {
     level: u8,
     text: String,
+    anchor: String,
 }
 
 pub fn generate_toc(args: &TocArgs) -> Result<(), Box<dyn std::error::Error>> {
@@ -15,75 +16,39 @@ pub fn generate_toc(args: &TocArgs) -> Result<(), Box<dyn std::error::Error>> {
     let arena = typed_arena::Arena::new();
     let root = parse_markdown(&arena, &content);
 
-    let headings = collect_headings(root, args.depth);
+    // Anchor every heading, then filter for display: comrak's Anchorizer
+    // deduplicates in document order, so skipping a heading here would shift
+    // the "-1"/"-2" suffixes away from the ones the HTML actually emits.
+    let headings = collect_headings(root);
 
-    for heading in &headings {
+    for heading in headings.iter().filter(|h| h.level <= args.depth) {
         let indent = "  ".repeat((heading.level - 1) as usize);
-        let slug = slugify(&heading.text);
-        println!("{}- [{}](#{})", indent, heading.text, slug);
+        println!("{}- [{}](#{})", indent, heading.text, heading.anchor);
     }
 
     Ok(())
 }
 
-fn collect_headings<'a>(root: &'a AstNode<'a>, max_depth: u8) -> Vec<Heading> {
+fn collect_headings<'a>(root: &'a AstNode<'a>) -> Vec<Heading> {
     let mut headings = Vec::new();
+    // The same anchorizer comrak uses when rendering HTML, so `mdx toc` links
+    // resolve against `--to html`, serve, publish and EPUB output.
+    let mut anchorizer = comrak::Anchorizer::new();
 
     for node in root.descendants() {
         let data = node.data.borrow();
-        if let NodeValue::Heading(ref heading) = data.value
-            && heading.level <= max_depth
-        {
-            let text = extract_text(node);
+        if let NodeValue::Heading(ref heading) = data.value {
+            let text = inline_text(node, CodeStyle::Fenced);
             if !text.is_empty() {
+                let anchor = anchorizer.anchorize(&text);
                 headings.push(Heading {
                     level: heading.level,
                     text,
+                    anchor,
                 });
             }
         }
     }
 
     headings
-}
-
-fn extract_text<'a>(node: &'a AstNode<'a>) -> String {
-    let mut text = String::new();
-    for child in node.descendants() {
-        let data = child.data.borrow();
-        match &data.value {
-            NodeValue::Text(t) => text.push_str(t),
-            NodeValue::Code(c) => {
-                text.push('`');
-                text.push_str(&c.literal);
-                text.push('`');
-            }
-            NodeValue::SoftBreak | NodeValue::LineBreak => text.push(' '),
-            _ => {}
-        }
-    }
-    text
-}
-
-fn slugify(text: &str) -> String {
-    // Remove backticks from code spans for the slug
-    let clean = text.replace('`', "");
-    clean
-        .to_lowercase()
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() {
-                c
-            } else if c == ' ' || c == '-' {
-                '-'
-            } else {
-                '\0'
-            }
-        })
-        .filter(|&c| c != '\0')
-        .collect::<String>()
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
 }

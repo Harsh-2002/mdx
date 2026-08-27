@@ -17,36 +17,73 @@ pub struct Args {
     pub file: Option<String>,
 
     /// Output width in columns (default: terminal width)
-    #[arg(short, long)]
+    ///
+    /// Accepted before or after any subcommand. Honored where output goes to
+    /// the terminal.
+    #[arg(short, long, global = true, help_heading = "Presentation")]
     pub width: Option<u16>,
 
-    /// Pipe output through less -R
-    #[arg(short, long)]
+    /// Pipe output through less -R (top level and `mdx fetch`)
+    ///
+    /// Not global: `mdx serve` owns `-p` for `--port`, and a global short is
+    /// pushed into every subcommand, which clap rejects at build time.
+    #[arg(short, long, help_heading = "Presentation")]
     pub pager: bool,
 
     /// Color mode: auto, always, never
-    #[arg(long, default_value = "auto")]
+    ///
+    /// Accepted before or after any subcommand.
+    #[arg(
+        long,
+        global = true,
+        default_value = "auto",
+        help_heading = "Presentation"
+    )]
     pub color: ColorMode,
 
     /// Theme: dark (default), light
-    #[arg(long, default_value = "dark")]
+    ///
+    /// Accepted before or after any subcommand. Honored by the terminal,
+    /// serve, watch, present, publish and `export --to html`.
+    #[arg(
+        long,
+        global = true,
+        default_value = "dark",
+        help_heading = "Presentation"
+    )]
     pub theme: ThemeName,
 
     /// Plain text output (no ANSI, no box-drawing, no fancy bullets)
-    #[arg(long)]
+    ///
+    /// Accepted before or after any subcommand.
+    #[arg(long, global = true, help_heading = "Presentation")]
     pub plain: bool,
 
     /// Syntax highlighting theme for code blocks
-    #[arg(long, default_value = "base16-ocean.dark")]
+    ///
+    /// Accepted before or after any subcommand. Honored by every target that
+    /// highlights code.
+    #[arg(
+        long,
+        global = true,
+        default_value = crate::options::DEFAULT_SYNTAX_THEME,
+        help_heading = "Presentation"
+    )]
     pub syntax_theme: String,
+
+    /// Custom CSS file to inject into HTML output (serve, export --to html, publish)
+    #[arg(
+        long,
+        global = true,
+        value_name = "FILE",
+        value_hint = ValueHint::FilePath,
+        help_heading = "Presentation"
+    )]
+    pub css: Option<String>,
 
     /// List available syntax highlighting themes and exit
     #[arg(long)]
     pub list_syntax_themes: bool,
-
-    /// Custom CSS file to inject (serve and export modes)
-    #[arg(long, value_name = "FILE", value_hint = ValueHint::FilePath)]
-    pub css: Option<String>,
 
     /// Generate man page
     #[arg(long)]
@@ -120,9 +157,24 @@ pub struct ServeArgs {
     #[arg(short, long)]
     pub port: Option<u16>,
 
-    /// Custom CSS file to inject
-    #[arg(long, value_name = "FILE", value_hint = ValueHint::FilePath)]
-    pub css: Option<String>,
+    /// Address to bind to (default: loopback only, reachable from this machine)
+    ///
+    /// Use --host 0.0.0.0 to reach the preview from other devices on your
+    /// network. The preview server has no authentication: anyone who can reach
+    /// the port can read these files, overwrite them (PUT /source), create new
+    /// ones (POST /create) and upload files into ./assets (POST /upload).
+    /// Accepts an IP address or "localhost".
+    #[arg(long, default_value = "127.0.0.1", value_name = "ADDR")]
+    pub host: String,
+
+    /// Render raw HTML embedded in the markdown (unsafe)
+    ///
+    /// Raw HTML is dropped by default, so a `<script>` tag in a downloaded,
+    /// cloned or agent-written document cannot run in your browser. Turn this
+    /// on only for documents you trust; it also re-enables javascript: and
+    /// data: links.
+    #[arg(long)]
+    pub unsafe_html: bool,
 }
 
 #[cfg(feature = "watch")]
@@ -215,9 +267,13 @@ pub struct ExportArgs {
     #[arg(long, value_parser = ["html", "json", "txt", "pdf", "epub"])]
     pub to: String,
 
-    /// Output file path (for pdf/epub: defaults to input filename with matching extension)
+    /// Output file path (pdf/epub default to the input name with a new extension)
     #[arg(short, long, value_hint = ValueHint::FilePath)]
     pub output: Option<String>,
+
+    /// Allow uploading mermaid source to kroki.io when mmdc is missing (pdf only)
+    #[arg(long)]
+    pub allow_remote_render: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -232,6 +288,14 @@ pub struct PublishArgs {
     /// Output directory for the generated site
     #[arg(long, short, default_value = "dist", value_hint = ValueHint::DirPath)]
     pub out: String,
+
+    /// Render raw HTML embedded in the markdown (unsafe)
+    ///
+    /// Raw HTML is dropped by default. A published site runs on a real origin,
+    /// where a `<script>` from a post you did not write is worse than in a
+    /// local preview. Turn this on only for content you trust.
+    #[arg(long)]
+    pub unsafe_html: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -276,6 +340,10 @@ pub struct FetchArgs {
     /// Show estimated token count
     #[arg(long)]
     pub tokens: bool,
+
+    /// Pipe output through less -R (same as the top-level -p)
+    #[arg(short = 'p', long)]
+    pub pager: bool,
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]
@@ -289,4 +357,35 @@ pub enum ColorMode {
 pub enum ThemeName {
     Dark,
     Light,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_is_well_formed() {
+        Args::command().debug_assert();
+    }
+
+    /// clap silently skips propagating a global into a subcommand that
+    /// redeclares its id, so a reintroduced ServeArgs::css would parse and
+    /// then be ignored. Nothing else would report that.
+    #[cfg(feature = "serve")]
+    #[test]
+    fn serve_css_is_the_global_css() {
+        let mut cmd = Args::command();
+        cmd.build();
+        let serve = cmd.find_subcommand("serve").expect("serve subcommand");
+        let css: Vec<_> = serve
+            .get_arguments()
+            .filter(|a| a.get_long() == Some("css"))
+            .collect();
+        assert_eq!(css.len(), 1, "exactly one --css must reach serve");
+        assert!(
+            css[0].is_global_set(),
+            "serve must not redeclare --css: a local copy silently shadows the global"
+        );
+    }
 }

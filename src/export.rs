@@ -9,7 +9,7 @@ use genpdfi::elements;
 use genpdfi::style;
 use genpdfi::{Element, Mm};
 
-use crate::parse::parse_markdown;
+use crate::parse::{CodeStyle, inline_text, parse_markdown};
 
 /// A4 content area dimensions (margins: 20/15/20/15mm from 210×297mm)
 #[cfg(feature = "images")]
@@ -21,57 +21,108 @@ pub struct ExportArgs {
     pub file: Option<String>,
     pub to: String,
     pub output: Option<String>,
+    /// Opt-in to rendering mermaid diagrams via the kroki.io web API, which
+    /// uploads the diagram source. Off unless the user passes the flag.
+    pub allow_remote_render: bool,
+}
+
+/// Write `content` to `output`, or to stdout when no path was given.
+///
+/// `-o` used to be read only by the pdf and epub arms, so
+/// `mdx export --to html -o out.html f.md` exited 0 having written nothing.
+fn emit(content: &str, output: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    match output {
+        Some(path) => {
+            if let Some(parent) = std::path::Path::new(path).parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("Cannot create '{}': {}", parent.display(), e))?;
+            }
+            std::fs::write(path, content).map_err(|e| format!("Cannot write '{}': {}", path, e))?;
+            eprintln!("  Wrote {}", path);
+        }
+        None => {
+            use std::io::Write;
+            let stdout = std::io::stdout();
+            let mut w = stdout.lock();
+            // A closed pipe (`| head`) is not an error worth reporting.
+            if let Err(e) = w.write_all(content.as_bytes())
+                && e.kind() != std::io::ErrorKind::BrokenPipe
+            {
+                return Err(Box::new(e));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Derive an output path from the input by swapping its extension.
+///
+/// Uses `Path::with_extension` rather than a string replace: `f.replace(".md",
+/// ".pdf")` is global, so `notes.md.backup.md` became `notes.pdf.backup.pdf`,
+/// and a directory named `v1.markdown/` was renamed in the output path too.
+fn default_output_path(file: Option<&str>, ext: &str) -> String {
+    match file {
+        Some(f) => std::path::Path::new(f)
+            .with_extension(ext)
+            .to_string_lossy()
+            .into_owned(),
+        None => format!("output.{}", ext),
+    }
 }
 
 pub fn run(args: &ExportArgs) -> Result<(), Box<dyn std::error::Error>> {
+    // Export converts a document the user named into a file they asked for, so
+    // it keeps rendering raw HTML. serve and publish default the other way and
+    // gate it behind --unsafe-html.
+    crate::options::set_allow_raw_html(true);
+    // export writes a file the user opens, not an origin: convert their
+    // document faithfully rather than applying GFM's tag filter.
+    crate::options::set_tagfilter(false);
+
     let content = read_input(&args.file)?;
     let title = args.file.as_deref().unwrap_or("document");
+
+    if args.allow_remote_render && args.to != "pdf" {
+        eprintln!("  --allow-remote-render only affects --to pdf; ignoring");
+    }
 
     match args.to.as_str() {
         "html" => {
             let html = crate::html::render_standalone(
                 &content,
-                "base16-ocean.dark",
-                &crate::cli::ThemeName::Dark,
+                crate::options::syntax_theme(),
+                crate::options::theme(),
                 title,
-                "",
+                crate::options::custom_css(),
             );
-            print!("{}", html);
+            emit(&html, args.output.as_deref())?;
         }
         "json" => {
             let arena = typed_arena::Arena::new();
             let root = parse_markdown(&arena, &content);
             let json = ast_to_json(root, 0);
-            println!("{}", json);
+            emit(&format!("{}\n", json), args.output.as_deref())?;
         }
         "txt" => {
             let arena = typed_arena::Arena::new();
             let root = parse_markdown(&arena, &content);
             let text = extract_plain_text(root);
-            print!("{}", text);
+            emit(&text, args.output.as_deref())?;
         }
         "pdf" => {
             let output_path = args
                 .output
                 .clone()
-                .or_else(|| {
-                    args.file
-                        .as_ref()
-                        .map(|f| f.replace(".md", ".pdf").replace(".markdown", ".pdf"))
-                })
-                .unwrap_or_else(|| "output.pdf".to_string());
-            export_pdf(&content, &output_path)?;
+                .unwrap_or_else(|| default_output_path(args.file.as_deref(), "pdf"));
+            export_pdf(&content, &output_path, args.allow_remote_render)?;
         }
         "epub" => {
             let output_path = args
                 .output
                 .clone()
-                .or_else(|| {
-                    args.file
-                        .as_ref()
-                        .map(|f| f.replace(".md", ".epub").replace(".markdown", ".epub"))
-                })
-                .unwrap_or_else(|| "output.epub".to_string());
+                .unwrap_or_else(|| default_output_path(args.file.as_deref(), "epub"));
             export_epub(&content, &output_path, args.file.as_deref())?;
         }
         other => {
@@ -88,7 +139,180 @@ pub fn run(args: &ExportArgs) -> Result<(), Box<dyn std::error::Error>> {
 
 // ─── PDF Export via genpdfi ───────────────────────────────────────────────────
 
+/// Sans-serif font file stems to look for, best first.
+///
+/// Helvetica/Arial first for metric fidelity, then the metric-compatible
+/// clones every mainstream distro ships. Nimbus Sans is the URW Helvetica
+/// clone installed with ghostscript.
+const SANS_CANDIDATES: &[&str] = &[
+    "Helvetica",
+    "Arial",
+    "LiberationSans-Regular",
+    "DejaVuSans",
+    "NimbusSans-Regular",
+    "FreeSans",
+    "Verdana",
+];
+
+/// Monospace font file stems to look for, best first.
+const MONO_CANDIDATES: &[&str] = &[
+    "Courier",
+    "CourierNew",
+    "LiberationMono-Regular",
+    "DejaVuSansMono",
+    "NimbusMonoPS-Regular",
+    "FreeMono",
+];
+
+/// Directories to search for fonts, per platform.
+fn font_search_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = if cfg!(target_os = "macos") {
+        vec![
+            "/System/Library/Fonts".into(),
+            "/System/Library/Fonts/Supplemental".into(),
+            "/Library/Fonts".into(),
+        ]
+    } else if cfg!(target_os = "windows") {
+        vec!["C:\\Windows\\Fonts".into()]
+    } else {
+        vec![
+            "/usr/share/fonts".into(),
+            "/usr/local/share/fonts".into(),
+            "/usr/share/texmf/fonts".into(),
+        ]
+    };
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        dirs.push(home.join(".fonts"));
+        dirs.push(home.join(".local/share/fonts"));
+    }
+    dirs
+}
+
+/// Find a usable font file by trying each candidate stem in turn.
+///
+/// markdown2pdf's own lookup reads only the direct children of a few hardcoded
+/// directories, but Debian and Ubuntu store fonts one level down
+/// (`/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf`), so it finds nothing and
+/// every PDF export fails with "Could not find a font for built-in metrics" --
+/// on the GitHub ubuntu runners too. Walk recursively instead.
+fn find_font_file(candidates: &[&str]) -> Option<PathBuf> {
+    let dirs = font_search_dirs();
+    for stem in candidates {
+        let want: Vec<String> = ["ttf", "otf"]
+            .iter()
+            .map(|ext| format!("{}.{}", stem, ext).to_lowercase())
+            .collect();
+        for dir in &dirs {
+            if !dir.is_dir() {
+                continue;
+            }
+            for entry in walkdir::WalkDir::new(dir)
+                .max_depth(4)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                // .ttc collections are not supported by the font parser.
+                if name.ends_with(".ttc") {
+                    continue;
+                }
+                if want.contains(&name) {
+                    return Some(entry.into_path());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Load a PDF font family, preferring a real system font file.
+///
+/// Falls back to markdown2pdf's built-in metrics loader so macOS and Windows,
+/// where the hardcoded lookup does work, behave exactly as before.
+fn load_pdf_font(
+    candidates: &[&str],
+    builtin: &str,
+) -> Result<genpdfi::fonts::FontFamily<genpdfi::fonts::FontData>, Box<dyn std::error::Error>> {
+    if let Some(path) = find_font_file(candidates)
+        && let Ok(family) =
+            markdown2pdf::fonts::load_font_family(markdown2pdf::fonts::FontSource::File(path))
+    {
+        return Ok(family);
+    }
+    markdown2pdf::fonts::load_builtin_font_family(builtin).map_err(|e| {
+        format!(
+            "Font error: {}. Searched for {:?} under {:?}.",
+            e,
+            candidates,
+            font_search_dirs()
+        )
+        .into()
+    })
+}
+
 const HEADING_SIZES: [u8; 6] = [24, 20, 16, 14, 12, 11];
+
+/// Width of the A4 content area in mm (210mm page, 15mm side margins).
+const RULE_WIDTH_MM: f32 = 180.0;
+
+/// Font size of the decorative rule under H1/H2.
+const RULE_FONT_SIZE: u8 = 4;
+
+/// Smallest size a heading will be shrunk to in order to fit.
+const MIN_HEADING_SIZE: u8 = 8;
+
+/// Shrink a heading until its longest unbreakable word fits the content width.
+///
+/// genpdfi breaks lines on whitespace, so a single word wider than the content
+/// area has no break opportunity and aborts the entire export with "Page
+/// overflowed while trying to wrap a string" -- one long word in one heading
+/// takes the whole document down. Stepping the size down keeps every character
+/// rather than truncating, and only affects headings that would otherwise fail.
+///
+/// Bounded by `MIN_HEADING_SIZE`, below which a heading stops being readable.
+/// A single word still too wide at that size -- roughly 100+ characters with no
+/// break in it -- will still fail the export.
+fn fit_heading_size(doc: &genpdfi::Document, text: &str, size: u8) -> u8 {
+    let Some(longest) = text.split_whitespace().max_by_key(|w| w.chars().count()) else {
+        return size;
+    };
+    let mut size = size;
+    while size > MIN_HEADING_SIZE {
+        let width: f32 = style::Style::new()
+            .with_font_size(size)
+            .bold()
+            .str_width(doc.font_cache(), longest)
+            .into();
+        if !width.is_finite() || width <= RULE_WIDTH_MM {
+            break;
+        }
+        size -= 1;
+    }
+    size
+}
+
+/// How many rule glyphs fit across the content width.
+///
+/// This was a hardcoded `repeat(200)`. Under markdown2pdf's built-in Helvetica
+/// metrics that happened not to overflow, but a real embedded font reports true
+/// advance widths, and 200 box-drawing glyphs are far wider than the page. The
+/// string contains no spaces, so genpdfi has no break opportunity and the whole
+/// export dies with "Page overflowed while trying to wrap a string" -- on every
+/// document with an H1 or H2.
+fn rule_repeat_count(doc: &genpdfi::Document, rule_char: &str, size: u8) -> usize {
+    let style = style::Style::new().with_font_size(size);
+    let width: f32 = style.str_width(doc.font_cache(), rule_char).into();
+    if !width.is_finite() || width <= 0.0 {
+        // Font gave us nothing usable; pick a count that fits any plausible glyph.
+        return 60;
+    }
+    ((RULE_WIDTH_MM / width).floor() as usize).clamp(1, 400)
+}
 
 /// A wrapper element that draws a filled background color behind its content.
 /// Uses PDF layers: background on current layer, content on next layer (on top).
@@ -304,7 +528,7 @@ fn extract_title<'a>(root: &'a AstNode<'a>) -> Option<String> {
             && h.level == 1
         {
             drop(data);
-            let title = collect_text(node);
+            let title = inline_text(node, CodeStyle::Bare);
             if !title.is_empty() {
                 return Some(title);
             }
@@ -314,6 +538,70 @@ fn extract_title<'a>(root: &'a AstNode<'a>) -> Option<String> {
 }
 
 // ─── EPUB Export via epub-builder ────────────────────────────────────────────
+
+/// Split a document into chapters at top-level headings.
+///
+/// A single `content.xhtml` gives a reader no navigation at all, so Apple
+/// Books, Kobo and Calibre show one undifferentiated blob no matter how many
+/// headings the source had. Splits on `#`, falling back to `##` when the
+/// document has fewer than two `#` headings (the common "one H1 title, H2
+/// sections" shape). Fence-aware, so a `# comment` inside a code block is not
+/// mistaken for a heading.
+///
+/// Returns `(title, markdown)` pairs. Content before the first heading becomes
+/// its own leading chapter.
+fn split_chapters(markdown: &str) -> Vec<(String, String)> {
+    for depth in [1usize, 2] {
+        let prefix = format!("{} ", "#".repeat(depth));
+        let mut fence = crate::text::FenceTracker::new();
+        let mut chapters: Vec<(String, String)> = Vec::new();
+        let mut current = String::new();
+        let mut current_title: Option<String> = None;
+
+        for line in markdown.lines() {
+            let in_fence = fence.feed(line);
+            if !in_fence
+                && let Some(rest) = line.strip_prefix(&prefix)
+                && !rest.trim().is_empty()
+            {
+                if current_title.is_some() || !current.trim().is_empty() {
+                    chapters.push((
+                        current_title.take().unwrap_or_default(),
+                        std::mem::take(&mut current),
+                    ));
+                }
+                current_title = Some(rest.trim().to_string());
+            }
+            current.push_str(line);
+            current.push('\n');
+        }
+        if current_title.is_some() || !current.trim().is_empty() {
+            chapters.push((current_title.unwrap_or_default(), current));
+        }
+
+        // Only accept this depth if it actually produced navigation.
+        if chapters.len() > 1 {
+            return chapters;
+        }
+    }
+    vec![(String::new(), markdown.to_string())]
+}
+
+/// Wrap an XHTML body fragment in the document skeleton every chapter needs.
+fn wrap_xhtml(title: &str, body: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <title>{title}</title>
+    <link rel="stylesheet" type="text/css" href="stylesheet.css" />
+</head>
+<body>
+{body}
+</body>
+</html>"#
+    )
+}
 
 fn export_epub(
     markdown: &str,
@@ -343,7 +631,7 @@ fn export_epub(
         })
         .unwrap_or_else(|| "Untitled".to_string());
 
-    let html_fragment = crate::html::render_fragment(markdown, "base16-ocean.dark");
+    let html_fragment = crate::html::render_fragment(markdown, crate::options::syntax_theme());
 
     let base_dir = source_file
         .map(|f| {
@@ -355,26 +643,15 @@ fn export_epub(
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
     let (processed_html, images) = process_images(&html_fragment, &base_dir);
-    let xhtml_body = html_to_xhtml(&processed_html);
-
-    let xhtml = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-    <title>{title}</title>
-    <link rel="stylesheet" type="text/css" href="stylesheet.css" />
-</head>
-<body>
-{xhtml_body}
-</body>
-</html>"#
-    );
 
     let mut builder = EpubBuilder::new(ZipLibrary::new()?)?;
     builder.epub_version(EpubVersion::V30);
     builder.metadata("title", &title)?;
-    if let Some(ref date) = fm.date {
-        builder.metadata("description", format!("Date: {}", date))?;
+    // EPUB 3 requires dc:language; readers and validators reject a book without
+    // it. Front matter can override the default.
+    builder.metadata("lang", fm.lang.clone().unwrap_or_else(|| "en".to_string()))?;
+    if let Some(ref author) = fm.author {
+        builder.metadata("author", author.clone())?;
     }
     for tag in &fm.tags {
         builder.metadata("subject", tag)?;
@@ -386,7 +663,35 @@ fn export_epub(
         builder.add_resource(epub_path, bytes.as_slice(), mime)?;
     }
 
-    builder.add_content(EpubContent::new("content.xhtml", xhtml.as_bytes()).title(&title))?;
+    // One XHTML document per chapter, so readers get real navigation. The
+    // images were already rewritten above, so re-render per chapter from the
+    // markdown and reuse the shared resource pool.
+    // Strip front matter first, or the YAML block becomes a phantom chapter 1.
+    let chapters = split_chapters(crate::frontmatter::strip(markdown));
+    if chapters.len() > 1 {
+        for (i, (chapter_title, body)) in chapters.iter().enumerate() {
+            let fragment = crate::html::render_fragment(body, crate::options::syntax_theme());
+            let (fragment, _) = process_images(&fragment, &base_dir);
+            let xhtml = wrap_xhtml(
+                if chapter_title.is_empty() {
+                    &title
+                } else {
+                    chapter_title
+                },
+                &html_to_xhtml(&fragment),
+            );
+            let href = format!("chapter_{:03}.xhtml", i + 1);
+            let label = if chapter_title.is_empty() {
+                title.clone()
+            } else {
+                chapter_title.clone()
+            };
+            builder.add_content(EpubContent::new(&href, xhtml.as_bytes()).title(label))?;
+        }
+    } else {
+        let xhtml = wrap_xhtml(&title, &html_to_xhtml(&processed_html));
+        builder.add_content(EpubContent::new("content.xhtml", xhtml.as_bytes()).title(&title))?;
+    }
 
     let mut output_file = std::fs::File::create(output_path)?;
     builder.generate(&mut output_file)?;
@@ -475,19 +780,30 @@ fn html_to_xhtml(html: &str) -> String {
 
 // ─── PDF Export via genpdfi ───────────────────────────────────────────────────
 
-pub fn export_pdf(markdown: &str, output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn export_pdf(
+    markdown: &str,
+    output_path: &str,
+    allow_remote_render: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::atomic::Ordering;
+
+    // Park the opt-in for the duration of this export; see ALLOW_REMOTE_RENDER.
+    ALLOW_REMOTE_RENDER.store(allow_remote_render, Ordering::Relaxed);
+    MERMAID_WARNED.store(false, Ordering::Relaxed);
+
+    #[cfg(not(feature = "url"))]
+    if allow_remote_render {
+        eprintln!("  --allow-remote-render has no effect in this build (no remote support)");
+    }
+
     let arena = typed_arena::Arena::new();
     let root = parse_markdown(&arena, markdown);
 
-    // Load built-in Helvetica font (no external font files needed)
-    let font = markdown2pdf::fonts::load_builtin_font_family("Helvetica")
-        .map_err(|e| format!("Font error: {}", e))?;
-
+    let font = load_pdf_font(SANS_CANDIDATES, "Helvetica")?;
     let mut doc = genpdfi::Document::new(font);
 
-    // Load Courier for monospace code blocks
-    let courier = markdown2pdf::fonts::load_builtin_font_family("Courier")
-        .map_err(|e| format!("Font error: {}", e))?;
+    // Monospace family for code blocks.
+    let courier = load_pdf_font(MONO_CANDIDATES, "Courier")?;
     let courier_ref = doc.add_font_family(courier);
 
     let title = extract_title(root).unwrap_or_else(|| "document".to_string());
@@ -536,7 +852,10 @@ pub fn export_pdf(markdown: &str, output_path: &str) -> Result<(), Box<dyn std::
     for path in &temp_files {
         let _ = std::fs::remove_file(path);
     }
-    let _ = std::fs::remove_dir(std::env::temp_dir().join("md-mermaid-export"));
+    // remove_dir only ever succeeded on an empty directory, so a failed mmdc run
+    // (which leaves mmdc_output.png behind) leaked the directory forever. The
+    // directory is now this process's alone, so removing it recursively is safe.
+    let _ = std::fs::remove_dir_all(mermaid_temp_dir());
 
     eprintln!("  Wrote {}", output_path);
     Ok(())
@@ -583,7 +902,8 @@ fn render_block<'a>(
                 *first_h1_seen = true;
             }
 
-            doc.push(elements::Break::new(1.5));
+            doc.push(elements::Break::new(1.5_f32));
+            let size = fit_heading_size(doc, &inline_text(node, CodeStyle::Bare), size);
             let mut p = elements::Paragraph::default();
             let base = style::Style::new()
                 .with_font_size(size)
@@ -600,14 +920,31 @@ fn render_block<'a>(
                 } else {
                     style::Color::Rgb(210, 212, 218)
                 };
+                let count = rule_repeat_count(doc, rule_char, RULE_FONT_SIZE);
                 let mut rule = elements::Paragraph::default();
                 rule.push_styled(
-                    rule_char.repeat(200),
-                    style::Style::new().with_font_size(4).with_color(rule_color),
+                    rule_char.repeat(count),
+                    style::Style::new()
+                        .with_font_size(RULE_FONT_SIZE)
+                        .with_color(rule_color),
                 );
                 doc.push(rule);
             }
-            doc.push(elements::Break::new(0.8));
+            doc.push(elements::Break::new(0.8_f32));
+        }
+        NodeValue::DescriptionTerm => {
+            drop(data);
+            let mut p = elements::Paragraph::default();
+            let base = style::Style::new().with_font_size(11).bold();
+            collect_inline(&mut p, node, base, mono_font);
+            doc.push(p);
+        }
+        NodeValue::DescriptionDetails => {
+            drop(data);
+            for child in node.children() {
+                render_block(doc, child, temp_files, mono_font, first_h1_seen);
+            }
+            doc.push(elements::Break::new(0.3_f32));
         }
         NodeValue::Paragraph => {
             drop(data);
@@ -617,7 +954,7 @@ fn render_block<'a>(
                 .with_color(style::Color::Rgb(30, 30, 30));
             collect_inline(&mut p, node, base, mono_font);
             doc.push(p);
-            doc.push(elements::Break::new(0.5));
+            doc.push(elements::Break::new(0.5_f32));
 
             // Embed any local images found in this paragraph
             embed_inline_images(doc, node);
@@ -627,34 +964,49 @@ fn render_block<'a>(
             let literal = cb.literal.clone();
             drop(data);
 
-            // Mermaid diagrams: render as image via kroki.io
-            if info == "mermaid"
+            let is_mermaid = info == "mermaid";
+
+            // Mermaid diagrams: render as an image when a renderer is available
+            // (local mmdc, or kroki.io when --allow-remote-render was passed).
+            if is_mermaid
                 && let Some((img_element, path)) =
                     render_mermaid_to_image(&literal, temp_files.len())
             {
-                doc.push(elements::Break::new(0.5));
+                doc.push(elements::Break::new(0.5_f32));
                 doc.push(img_element);
-                doc.push(elements::Break::new(0.5));
+                doc.push(elements::Break::new(0.5_f32));
                 temp_files.push(path);
                 return;
             }
 
+            // No renderer available: fall through to a labelled source block so the
+            // export still succeeds, and say once how to get a real diagram.
+            if is_mermaid {
+                warn_mermaid_not_rendered();
+            }
+
             // Regular code block: monospace font with soft background
-            doc.push(elements::Break::new(0.5));
+            doc.push(elements::Break::new(0.5_f32));
 
             // Language label above the code block
-            if !info.is_empty() {
-                let lang = info.split_whitespace().next().unwrap_or(&info);
+            let label = if is_mermaid {
+                Some("mermaid (diagram not rendered - showing source)".to_string())
+            } else if info.is_empty() {
+                None
+            } else {
+                Some(info.split_whitespace().next().unwrap_or(&info).to_string())
+            };
+            if let Some(label) = label {
                 let mut lang_p = elements::Paragraph::default();
                 lang_p.push_styled(
-                    format!("  {}", lang),
+                    format!("  {}", label),
                     style::Style::new()
                         .with_font_size(8)
                         .with_font_family(mono_font)
                         .with_color(style::Color::Rgb(130, 130, 140)),
                 );
                 doc.push(lang_p);
-                doc.push(elements::Break::new(0.15));
+                doc.push(elements::Break::new(0.15_f32));
             }
 
             let code_style = style::Style::new()
@@ -666,10 +1018,11 @@ fn render_block<'a>(
             let max_chars = 71;
             let mut layout = elements::LinearLayout::vertical();
             for line in literal.lines() {
-                let mut p = elements::Paragraph::default();
-                let display = truncate_line(line, max_chars);
-                p.push_styled(display, code_style);
-                layout.push(p);
+                for display in wrap_code_line(line, max_chars) {
+                    let mut p = elements::Paragraph::default();
+                    p.push_styled(display, code_style);
+                    layout.push(p);
+                }
             }
 
             // Soft gray background behind code content
@@ -679,14 +1032,14 @@ fn render_block<'a>(
                 3, // vertical padding (mm)
                 4, // horizontal padding (mm)
             ));
-            doc.push(elements::Break::new(0.5));
+            doc.push(elements::Break::new(0.5_f32));
         }
         NodeValue::List(list) => {
             let lt = list.list_type;
             let start = list.start;
             drop(data);
             render_list(doc, node, lt, start, temp_files, mono_font, first_h1_seen);
-            doc.push(elements::Break::new(0.3));
+            doc.push(elements::Break::new(0.3_f32));
         }
         NodeValue::Item(_) | NodeValue::TaskItem(_) => {
             // Handled by render_list
@@ -694,7 +1047,7 @@ fn render_block<'a>(
         }
         NodeValue::BlockQuote => {
             drop(data);
-            doc.push(elements::Break::new(0.3));
+            doc.push(elements::Break::new(0.3_f32));
             let bar_color = style::Color::Rgb(180, 185, 195);
             for child in node.children() {
                 let cd = child.data.borrow();
@@ -711,13 +1064,13 @@ fn render_block<'a>(
                     );
                     collect_inline(&mut p, child, qs, mono_font);
                     doc.push(p);
-                    doc.push(elements::Break::new(0.2));
+                    doc.push(elements::Break::new(0.2_f32));
                 } else {
                     drop(cd);
                     render_block(doc, child, temp_files, mono_font, first_h1_seen);
                 }
             }
-            doc.push(elements::Break::new(0.3));
+            doc.push(elements::Break::new(0.3_f32));
         }
         NodeValue::Table(_) => {
             drop(data);
@@ -725,7 +1078,7 @@ fn render_block<'a>(
         }
         NodeValue::ThematicBreak => {
             drop(data);
-            doc.push(elements::Break::new(0.5));
+            doc.push(elements::Break::new(0.5_f32));
             let mut p = elements::Paragraph::default();
             p.set_alignment(genpdfi::Alignment::Center);
             p.push_styled(
@@ -733,7 +1086,7 @@ fn render_block<'a>(
                 style::Style::new().with_color(style::Color::Rgb(200, 200, 205)),
             );
             doc.push(p);
-            doc.push(elements::Break::new(0.5));
+            doc.push(elements::Break::new(0.5_f32));
         }
         NodeValue::FrontMatter(_)
         | NodeValue::HtmlBlock(_)
@@ -797,14 +1150,14 @@ fn collect_inline<'a>(
                 let url = link.url.clone();
                 drop(data);
                 let link_style = base.with_color(style::Color::Rgb(0, 95, 204)).underline();
-                let text = collect_text(child);
+                let text = inline_text(child, CodeStyle::Bare);
                 p.push_link(text, url, link_style);
             }
             NodeValue::Image(img) => {
                 let title = img.title.clone();
                 drop(data);
                 // Prefer alt text from children, fall back to title attribute
-                let text = collect_text(child);
+                let text = inline_text(child, CodeStyle::Bare);
                 let text = if text.is_empty() { title } else { text };
                 if !text.is_empty() {
                     p.push_styled(format!("[{}]", text), base.italic());
@@ -866,7 +1219,7 @@ fn embed_inline_images<'a>(doc: &mut genpdfi::Document, node: &'a AstNode<'a>) {
             if let Ok(img_element) = elements::Image::from_path(path) {
                 let img_element = scale_image_to_fit(img_element, path);
                 doc.push(img_element.with_alignment(genpdfi::Alignment::Center));
-                doc.push(elements::Break::new(0.5));
+                doc.push(elements::Break::new(0.5_f32));
             }
         } else {
             drop(data);
@@ -876,36 +1229,6 @@ fn embed_inline_images<'a>(doc: &mut genpdfi::Document, node: &'a AstNode<'a>) {
 
 #[cfg(not(feature = "images"))]
 fn embed_inline_images<'a>(_doc: &mut genpdfi::Document, _node: &'a AstNode<'a>) {}
-
-/// Truncate a line to max_chars, adding ellipsis if truncated. UTF-8 safe.
-fn truncate_line(line: &str, max_chars: usize) -> String {
-    let char_count = line.chars().count();
-    if char_count <= max_chars {
-        return line.to_string();
-    }
-    // Find byte boundary at max_chars characters
-    if let Some((idx, _)) = line.char_indices().nth(max_chars) {
-        format!("{}\u{2026}", &line[..idx])
-    } else {
-        line.to_string()
-    }
-}
-
-/// Collect all plain text from a node tree.
-fn collect_text<'a>(node: &'a AstNode<'a>) -> String {
-    let mut s = String::new();
-    for child in node.descendants() {
-        let data = child.data.borrow();
-        if let NodeValue::Text(t) = &data.value {
-            s.push_str(t);
-        } else if let NodeValue::Code(c) = &data.value {
-            s.push_str(&c.literal);
-        } else if matches!(&data.value, NodeValue::SoftBreak) {
-            s.push(' ');
-        }
-    }
-    s
-}
 
 fn render_list<'a>(
     doc: &mut genpdfi::Document,
@@ -960,7 +1283,7 @@ fn render_list<'a>(
                     }
                     collect_inline(&mut p, item_child, body_style, mono_font);
                     doc.push(p);
-                    doc.push(elements::Break::new(0.15));
+                    doc.push(elements::Break::new(0.15_f32));
                 }
                 NodeValue::List(sub_list) => {
                     let lt = sub_list.list_type;
@@ -968,7 +1291,7 @@ fn render_list<'a>(
                     drop(cd);
                     // Nested list with indentation
                     doc.push(elements::PaddedElement::new(
-                        elements::Break::new(0.0),
+                        elements::Break::new(0.0_f32),
                         genpdfi::Margins::trbl(0, 0, 0, 6),
                     ));
                     render_list(
@@ -990,20 +1313,57 @@ fn render_list<'a>(
     }
 }
 
+/// Hard-wrap an over-long code line instead of truncating it.
+///
+/// genpdfi cannot break a string with no spaces, and the previous behaviour
+/// silently discarded everything past the cut.
+fn wrap_code_line(line: &str, max_chars: usize) -> Vec<String> {
+    if max_chars == 0 || line.chars().count() <= max_chars {
+        return vec![line.to_string()];
+    }
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for c in line.chars() {
+        if current.chars().count() == max_chars {
+            out.push(std::mem::take(&mut current));
+        }
+        current.push(c);
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
 fn render_table<'a>(
     doc: &mut genpdfi::Document,
     node: &'a AstNode<'a>,
     mono_font: genpdfi::fonts::FontFamily<genpdfi::fonts::Font>,
 ) {
-    // Count columns from first row
+    // Widest row, not the first: a row with more cells than the header would
+    // otherwise make push() fail and silently drop the whole row.
     let num_cols = node
         .children()
-        .next()
+        .filter(|r| matches!(&r.data.borrow().value, NodeValue::TableRow(_)))
         .map(|r| r.children().count())
+        .max()
         .unwrap_or(0);
     if num_cols == 0 {
         return;
     }
+
+    let alignments: Vec<genpdfi::Alignment> = match &node.data.borrow().value {
+        NodeValue::Table(t) => t
+            .alignments
+            .iter()
+            .map(|a| match a {
+                comrak::nodes::TableAlignment::Right => genpdfi::Alignment::Right,
+                comrak::nodes::TableAlignment::Center => genpdfi::Alignment::Center,
+                _ => genpdfi::Alignment::Left,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
 
     let column_weights = vec![1; num_cols];
     let mut table = elements::TableLayout::new(column_weights);
@@ -1030,9 +1390,14 @@ fn render_table<'a>(
         };
 
         let mut row = table.row();
-        for cell_node in row_node.children() {
+        let mut cells = 0usize;
+        for (col, cell_node) in row_node.children().enumerate() {
             let mut p = elements::Paragraph::default();
+            if let Some(a) = alignments.get(col) {
+                p.set_alignment(*a);
+            }
             collect_inline(&mut p, cell_node, cell_style, mono_font);
+            cells += 1;
             if is_header {
                 row.push_element(
                     FilledElement::new(
@@ -1050,13 +1415,19 @@ fn render_table<'a>(
                 ));
             }
         }
-        let _ = row.push();
+        // Short rows must be padded or push() rejects the whole row.
+        for _ in cells..num_cols {
+            row.push_element(elements::Paragraph::default());
+        }
+        if row.push().is_err() {
+            eprintln!("  Warning: skipped a table row the PDF layout could not fit");
+        }
         is_header = false;
     }
 
-    doc.push(elements::Break::new(0.3));
+    doc.push(elements::Break::new(0.3_f32));
     doc.push(table);
-    doc.push(elements::Break::new(0.5));
+    doc.push(elements::Break::new(0.5_f32));
 }
 
 // ─── Alert Block Rendering ───────────────────────────────────────────────────
@@ -1077,7 +1448,7 @@ fn render_alert_block<'a>(
         AlertType::Caution => ("Caution", style::Color::Rgb(207, 34, 46)),
     };
 
-    doc.push(elements::Break::new(0.3));
+    doc.push(elements::Break::new(0.3_f32));
 
     // Bold colored label
     let mut label_p = elements::Paragraph::default();
@@ -1089,7 +1460,7 @@ fn render_alert_block<'a>(
             .with_color(color),
     );
     doc.push(label_p);
-    doc.push(elements::Break::new(0.2));
+    doc.push(elements::Break::new(0.2_f32));
 
     // Render children with blockquote-style prefix
     for child in node.children() {
@@ -1103,14 +1474,14 @@ fn render_alert_block<'a>(
             p.push_styled("  \u{2502} ", style::Style::new().with_color(color));
             collect_inline(&mut p, child, qs, mono_font);
             doc.push(p);
-            doc.push(elements::Break::new(0.2));
+            doc.push(elements::Break::new(0.2_f32));
         } else {
             drop(cd);
             render_block(doc, child, temp_files, mono_font, first_h1_seen);
         }
     }
 
-    doc.push(elements::Break::new(0.3));
+    doc.push(elements::Break::new(0.3_f32));
 }
 
 // ─── Footnote Rendering ─────────────────────────────────────────────────────
@@ -1128,7 +1499,7 @@ fn render_footnotes<'a>(
         if let NodeValue::FootnoteDefinition(fd) = &data.value {
             let name = fd.name.clone();
             drop(data);
-            let text = collect_text(node);
+            let text = inline_text(node, CodeStyle::Bare);
             footnotes.push((name, text));
         }
     }
@@ -1138,14 +1509,14 @@ fn render_footnotes<'a>(
     }
 
     // Separator
-    doc.push(elements::Break::new(1.5));
+    doc.push(elements::Break::new(1.5_f32));
     let mut sep = elements::Paragraph::default();
     sep.push_styled(
         "\u{2500}".repeat(40),
         style::Style::new().with_color(style::Color::Rgb(200, 200, 205)),
     );
     doc.push(sep);
-    doc.push(elements::Break::new(0.5));
+    doc.push(elements::Break::new(0.5_f32));
 
     // Footnote entries
     let fn_style = style::Style::new()
@@ -1157,18 +1528,71 @@ fn render_footnotes<'a>(
         p.push_styled(format!("[{}] ", name), fn_style.bold());
         p.push_styled(text, fn_style);
         doc.push(p);
-        doc.push(elements::Break::new(0.2));
+        doc.push(elements::Break::new(0.2_f32));
     }
 }
 
 // ─── Mermaid Diagram Rendering ───────────────────────────────────────────────
+
+/// Whether the user opted in to remote diagram rendering for this export.
+///
+/// Set once by `export_pdf` before the AST walk. The mermaid renderer is reached
+/// through the recursive `render_block`/`render_list` walk, and `render_list`
+/// already takes 7 arguments, so threading a flag down would trip
+/// `clippy::too_many_arguments`. Defaults to false: diagram source never leaves
+/// the machine unless `--allow-remote-render` was passed.
+static ALLOW_REMOTE_RENDER: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Set on the first unrendered diagram so the advice is printed once per export,
+/// however many mermaid blocks the document contains.
+static MERMAID_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Temp directory for mermaid intermediates, scoped to this process.
+///
+/// Concurrent exports previously shared one directory and fixed file names, so
+/// they overwrote each other's input and output. Same PID reasoning as the
+/// code-block background above; owning the whole directory also makes the
+/// end-of-export cleanup safe to do recursively.
+fn mermaid_temp_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("md-mermaid-export-{}", std::process::id()))
+}
+
+/// Print, at most once per export, why a mermaid diagram was left as source.
+fn warn_mermaid_not_rendered() {
+    use std::sync::atomic::Ordering;
+    if MERMAID_WARNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+
+    #[cfg(feature = "url")]
+    if ALLOW_REMOTE_RENDER.load(Ordering::Relaxed) {
+        eprintln!(
+            "  Mermaid diagram not rendered (source shown instead) - no usable image \
+             came back from mmdc or from kroki.io"
+        );
+        return;
+    }
+
+    #[cfg(feature = "url")]
+    eprintln!(
+        "  Mermaid diagram not rendered (source shown instead) - install mmdc to \
+         render locally, or pass --allow-remote-render to upload the source to kroki.io"
+    );
+
+    #[cfg(not(feature = "url"))]
+    eprintln!(
+        "  Mermaid diagram not rendered (source shown instead) - install mmdc \
+         (npm install -g @mermaid-js/mermaid-cli) to render it locally"
+    );
+}
 
 /// Render a mermaid code block as a PNG image for PDF embedding.
 /// Returns the genpdfi Image element and the temp file path for cleanup.
 fn render_mermaid_to_image(code: &str, index: usize) -> Option<(elements::Image, PathBuf)> {
     let png_bytes = render_mermaid_png(code)?;
 
-    let temp_dir = std::env::temp_dir().join("md-mermaid-export");
+    let temp_dir = mermaid_temp_dir();
     let _ = std::fs::create_dir_all(&temp_dir);
 
     // Convert PNG (RGBA) to JPEG (RGB) — genpdfi doesn't support alpha channel
@@ -1240,14 +1664,18 @@ fn convert_png_to_jpeg(
     Err("Image conversion requires the 'images' feature".into())
 }
 
-/// Try to render mermaid to PNG. Tries mmdc CLI first, then kroki.io API.
+/// Try to render mermaid to PNG. Uses the local mmdc CLI; falls back to the
+/// kroki.io web API only when the user passed `--allow-remote-render`, because
+/// that fallback sends the diagram source to a third-party server.
 fn render_mermaid_png(code: &str) -> Option<Vec<u8>> {
     if let Some(data) = render_mermaid_mmdc(code) {
         return Some(data);
     }
 
     #[cfg(feature = "url")]
-    if let Some(data) = render_mermaid_kroki(code) {
+    if ALLOW_REMOTE_RENDER.load(std::sync::atomic::Ordering::Relaxed)
+        && let Some(data) = render_mermaid_kroki(code)
+    {
         return Some(data);
     }
 
@@ -1256,7 +1684,7 @@ fn render_mermaid_png(code: &str) -> Option<Vec<u8>> {
 
 /// Render mermaid to PNG using the mmdc CLI (mermaid-cli, works offline).
 fn render_mermaid_mmdc(code: &str) -> Option<Vec<u8>> {
-    let temp_dir = std::env::temp_dir().join("md-mermaid-export");
+    let temp_dir = mermaid_temp_dir();
     let _ = std::fs::create_dir_all(&temp_dir);
     let input_path = temp_dir.join("mmdc_input.mmd");
     let output_path = temp_dir.join("mmdc_output.png");
@@ -1293,11 +1721,19 @@ fn render_mermaid_mmdc(code: &str) -> Option<Vec<u8>> {
 }
 
 /// Render mermaid to PNG using the kroki.io web API (no browser needed).
+///
+/// Uploads the diagram source. Only ever called with `--allow-remote-render`.
 #[cfg(feature = "url")]
 fn render_mermaid_kroki(code: &str) -> Option<Vec<u8>> {
+    const KROKI_ENDPOINT: &str = "https://kroki.io/mermaid/png";
     // Use neutral theme for clean, soft diagram style
     let themed_code = format!("%%{{init: {{\"theme\": \"neutral\"}}}}%%\n{}", code);
-    let resp = ureq::post("https://kroki.io/mermaid/png")
+    eprintln!(
+        "  Uploading mermaid source ({} bytes) to {}",
+        themed_code.len(),
+        KROKI_ENDPOINT
+    );
+    let resp = ureq::post(KROKI_ENDPOINT)
         .header("Content-Type", "text/plain")
         .send(&themed_code)
         .ok()?;
@@ -1354,6 +1790,14 @@ fn ast_to_json<'a>(node: &'a AstNode<'a>, depth: usize) -> String {
         NodeValue::FootnoteDefinition(_) => "footnote_definition",
         NodeValue::FootnoteReference(_) => "footnote_reference",
         NodeValue::Math(_) => "math",
+        NodeValue::TaskItem(_) => "task_item",
+        NodeValue::Highlight => "highlight",
+        NodeValue::Superscript => "superscript",
+        NodeValue::WikiLink(_) => "wikilink",
+        NodeValue::DescriptionList => "description_list",
+        NodeValue::DescriptionItem(_) => "description_item",
+        NodeValue::DescriptionTerm => "description_term",
+        NodeValue::DescriptionDetails => "description_details",
         NodeValue::Alert(_) => "alert",
         _ => "other",
     };
@@ -1364,6 +1808,44 @@ fn ast_to_json<'a>(node: &'a AstNode<'a>, depth: usize) -> String {
         NodeValue::Text(t) => props.push(format!("{}\"value\": {}", indent1, json_escape(t))),
         NodeValue::Code(c) => {
             props.push(format!("{}\"value\": {}", indent1, json_escape(&c.literal)))
+        }
+        NodeValue::Math(m) => {
+            props.push(format!(
+                "{}\"literal\": {}",
+                indent1,
+                json_escape(&m.literal)
+            ));
+            props.push(format!("{}\"display\": {}", indent1, m.display_math));
+            props.push(format!("{}\"dollar\": {}", indent1, m.dollar_math));
+        }
+        NodeValue::HtmlBlock(hb) => {
+            props.push(format!(
+                "{}\"literal\": {}",
+                indent1,
+                json_escape(&hb.literal)
+            ));
+        }
+        NodeValue::HtmlInline(h) => {
+            props.push(format!("{}\"literal\": {}", indent1, json_escape(h)));
+        }
+        NodeValue::Alert(a) => {
+            props.push(format!(
+                "{}\"alert_type\": {}",
+                indent1,
+                json_escape(&format!("{:?}", a.alert_type))
+            ));
+        }
+        NodeValue::FootnoteDefinition(f) => {
+            props.push(format!("{}\"name\": {}", indent1, json_escape(&f.name)));
+        }
+        NodeValue::FootnoteReference(f) => {
+            props.push(format!("{}\"name\": {}", indent1, json_escape(&f.name)));
+        }
+        NodeValue::TaskItem(t) => {
+            props.push(format!("{}\"checked\": {}", indent1, t.symbol.is_some()));
+        }
+        NodeValue::WikiLink(link) => {
+            props.push(format!("{}\"url\": {}", indent1, json_escape(&link.url)));
         }
         NodeValue::CodeBlock(cb) => {
             props.push(format!("{}\"info\": {}", indent1, json_escape(&cb.info)));
@@ -1433,10 +1915,39 @@ fn json_escape(s: &str) -> String {
 }
 
 fn extract_plain_text<'a>(root: &'a AstNode<'a>) -> String {
+    use comrak::arena_tree::NodeEdge;
+
     let mut text = String::new();
     let mut last_was_block = false;
+    let mut first_cell_in_row = true;
 
-    for node in root.descendants() {
+    for edge in root.traverse() {
+        let node = match edge {
+            NodeEdge::Start(n) => n,
+            NodeEdge::End(n) => {
+                match &n.data.borrow().value {
+                    // A link's target is only useful after its label.
+                    NodeValue::Link(link) if !link.url.is_empty() => {
+                        text.push_str(" (");
+                        text.push_str(&link.url);
+                        text.push(')');
+                        last_was_block = false;
+                    }
+                    NodeValue::TableRow(_) => {
+                        text.push('\n');
+                        last_was_block = true;
+                    }
+                    NodeValue::WikiLink(link) if !link.url.is_empty() => {
+                        text.push_str(" (");
+                        text.push_str(&link.url);
+                        text.push(')');
+                        last_was_block = false;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+        };
         let data = node.data.borrow();
         match &data.value {
             NodeValue::Text(t) => {
@@ -1452,6 +1963,34 @@ fn extract_plain_text<'a>(root: &'a AstNode<'a>) -> String {
                     text.push('\n');
                 }
                 text.push_str(&cb.literal);
+                last_was_block = true;
+            }
+            NodeValue::TableRow(_) => {
+                if !text.is_empty() && !text.ends_with('\n') {
+                    text.push('\n');
+                }
+                first_cell_in_row = true;
+            }
+            NodeValue::TableCell => {
+                if !first_cell_in_row {
+                    text.push_str(" | ");
+                }
+                first_cell_in_row = false;
+                last_was_block = false;
+            }
+            NodeValue::Math(m) => {
+                text.push_str(&m.literal);
+                last_was_block = false;
+            }
+            NodeValue::HtmlInline(h) => {
+                text.push_str(h);
+                last_was_block = false;
+            }
+            NodeValue::HtmlBlock(hb) => {
+                if !text.is_empty() && !text.ends_with('\n') {
+                    text.push_str("\n\n");
+                }
+                text.push_str(hb.literal.trim_end());
                 last_was_block = true;
             }
             NodeValue::SoftBreak | NodeValue::LineBreak => {
@@ -1479,5 +2018,158 @@ fn extract_plain_text<'a>(root: &'a AstNode<'a>) -> String {
         String::new()
     } else {
         format!("{}\n", trimmed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mermaid_temp_dir_is_process_scoped() {
+        let dir = mermaid_temp_dir();
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(
+            name.ends_with(&std::process::id().to_string()),
+            "mermaid temp dir must carry the pid so concurrent exports cannot collide: {}",
+            name
+        );
+        assert_ne!(
+            dir,
+            std::env::temp_dir().join("md-mermaid-export"),
+            "the old shared directory must not be reused"
+        );
+    }
+
+    #[test]
+    fn remote_render_is_off_by_default() {
+        use std::sync::atomic::Ordering;
+        // Valid only while no unit test in this binary calls export_pdf, which
+        // sets this process-global. Drop this test if one is ever added.
+        assert!(
+            !ALLOW_REMOTE_RENDER.load(Ordering::Relaxed),
+            "diagram source must never be uploaded unless --allow-remote-render set it"
+        );
+    }
+}
+
+#[cfg(test)]
+mod output_path_tests {
+    use super::*;
+
+    #[test]
+    fn test_default_output_path_swaps_extension() {
+        assert_eq!(default_output_path(Some("README.md"), "pdf"), "README.pdf");
+        assert_eq!(
+            default_output_path(Some("docs/a.markdown"), "epub"),
+            "docs/a.epub"
+        );
+        assert_eq!(default_output_path(None, "pdf"), "output.pdf");
+    }
+
+    #[test]
+    fn test_default_output_path_only_touches_the_last_extension() {
+        // `f.replace(".md", ".pdf")` was global: this produced
+        // "notes.pdf.backup.pdf".
+        assert_eq!(
+            default_output_path(Some("notes.md.backup.md"), "pdf"),
+            "notes.md.backup.pdf"
+        );
+    }
+
+    #[test]
+    fn test_default_output_path_leaves_directories_alone() {
+        // A directory whose name contains ".markdown" was rewritten too.
+        assert_eq!(
+            default_output_path(Some("v1.markdown/post.md"), "pdf"),
+            "v1.markdown/post.pdf"
+        );
+    }
+
+    #[test]
+    fn test_default_output_path_handles_no_extension() {
+        assert_eq!(default_output_path(Some("LICENSE"), "pdf"), "LICENSE.pdf");
+    }
+}
+
+#[cfg(test)]
+mod chapter_tests {
+    use super::*;
+
+    #[test]
+    fn test_splits_on_h1() {
+        let ch = split_chapters("# One\n\na\n\n# Two\n\nb\n");
+        assert_eq!(ch.len(), 2);
+        assert_eq!(ch[0].0, "One");
+        assert_eq!(ch[1].0, "Two");
+    }
+
+    #[test]
+    fn test_falls_back_to_h2_when_only_one_h1() {
+        let ch = split_chapters("# Title\n\nintro\n\n## Alpha\n\na\n\n## Beta\n\nb\n");
+        let titles: Vec<&str> = ch.iter().map(|c| c.0.as_str()).collect();
+        // The leading chunk holds the H1 and the intro but has no H2 of its
+        // own, so its title is empty; export_epub substitutes the document
+        // title for it, which is what reaches the reader's table of contents.
+        assert_eq!(titles, vec!["", "Alpha", "Beta"]);
+        assert!(ch[0].1.contains("# Title"));
+    }
+
+    #[test]
+    fn test_heading_inside_code_fence_is_not_a_chapter() {
+        let ch = split_chapters("# One\n\n```sh\n# not a heading\n# nor this\n```\n\n# Two\n");
+        assert_eq!(ch.len(), 2, "fenced # lines must not split: {:?}", ch);
+    }
+
+    #[test]
+    fn test_no_headings_is_a_single_chapter() {
+        let ch = split_chapters("Just prose.\n\nMore prose.\n");
+        assert_eq!(ch.len(), 1);
+        assert!(ch[0].0.is_empty(), "untitled chapter");
+    }
+
+    #[test]
+    fn test_content_before_first_heading_becomes_its_own_chapter() {
+        let ch = split_chapters("Preamble text.\n\n# One\n\na\n\n# Two\n\nb\n");
+        assert_eq!(ch.len(), 3);
+        assert!(ch[0].0.is_empty());
+        assert!(ch[0].1.contains("Preamble"));
+    }
+
+    #[test]
+    fn test_empty_heading_does_not_start_a_chapter() {
+        let ch = split_chapters("# \n\ntext\n");
+        assert_eq!(ch.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod code_wrap_tests {
+    use super::*;
+
+    #[test]
+    fn test_short_line_untouched() {
+        assert_eq!(wrap_code_line("abc", 10), vec!["abc"]);
+    }
+
+    #[test]
+    fn test_exact_length_untouched() {
+        assert_eq!(wrap_code_line("abcde", 5), vec!["abcde"]);
+    }
+
+    #[test]
+    fn test_long_line_wraps_without_loss() {
+        let line = "a".repeat(25);
+        let wrapped = wrap_code_line(&line, 10);
+        assert_eq!(wrapped.len(), 3);
+        assert_eq!(wrapped.concat(), line, "no character may be dropped");
+    }
+
+    #[test]
+    fn test_multibyte_counts_characters_not_bytes() {
+        let line = "\u{65e5}".repeat(12);
+        let wrapped = wrap_code_line(&line, 5);
+        assert_eq!(wrapped.concat(), line);
+        assert!(wrapped.iter().all(|s| s.chars().count() <= 5));
     }
 }

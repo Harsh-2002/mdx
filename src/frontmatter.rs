@@ -6,6 +6,13 @@ pub struct FrontMatter {
     pub date: Option<String>,
     pub tags: Vec<String>,
     pub draft: bool,
+    pub author: Option<String>,
+    /// BCP-47 language tag. EPUB 3 requires dc:language on every document.
+    pub lang: Option<String>,
+    pub excerpt: Option<String>,
+    pub image: Option<String>,
+    pub site_name: Option<String>,
+    pub url: Option<String>,
 }
 
 pub fn parse(content: &str) -> FrontMatter {
@@ -14,6 +21,12 @@ pub fn parse(content: &str) -> FrontMatter {
         date: None,
         tags: Vec::new(),
         draft: false,
+        author: None,
+        lang: None,
+        excerpt: None,
+        image: None,
+        site_name: None,
+        url: None,
     };
 
     if !content.starts_with("---") {
@@ -43,6 +56,12 @@ pub fn parse(content: &str) -> FrontMatter {
                             .collect();
                     }
                     "draft" => fm.draft = value == "true",
+                    "author" => fm.author = Some(value),
+                    "lang" | "language" => fm.lang = Some(value),
+                    "excerpt" | "description" => fm.excerpt = Some(value),
+                    "image" => fm.image = Some(value),
+                    "site_name" => fm.site_name = Some(value),
+                    "url" => fm.url = Some(value),
                     _ => {}
                 }
             }

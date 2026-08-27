@@ -1010,6 +1010,41 @@ fn test_generate_man() {
 }
 
 #[test]
+fn test_generate_man_documents_subcommand_flags() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .arg("--generate-man")
+        .output()
+        .expect("Failed to execute mdx");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // One page per subcommand, each with its own .TH header.
+    let pages = stdout.matches(".TH").count();
+    assert!(
+        pages > 1,
+        "Expected a page per subcommand, found {} .TH header(s)",
+        pages
+    );
+    assert!(
+        stdout.contains(".TH mdx-export"),
+        "Subcommand pages should be titled mdx-<name>"
+    );
+    assert!(
+        stdout.contains(".TH mdx-fetch"),
+        "every subcommand should get a page"
+    );
+    assert!(
+        !stdout.contains(".TH mdx-help"),
+        "clap's synthetic help subcommand should not get a page"
+    );
+    // Subcommand-level flags were previously absent from the man page entirely.
+    assert!(
+        stdout.contains("\\-\\-to") || stdout.contains("--to"),
+        "export's --to flag should be documented"
+    );
+}
+
+#[test]
 fn test_completions_bash() {
     let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
         .args(["completions", "bash"])
@@ -1482,4 +1517,294 @@ fn test_export_epub_custom_output() {
     assert_eq!(&bytes[0..2], b"PK", "EPUB should be a zip file");
     let _ = std::fs::remove_file(&tmp);
     let _ = std::fs::remove_file(&custom_output);
+}
+
+// ── PDF export: mermaid never leaves the machine unasked ─────────────
+
+#[test]
+fn test_export_pdf_mermaid_never_uploads_without_flag() {
+    let tmp = write_tmp(
+        "mermaid.md",
+        "# Diagram\n\n```mermaid\ngraph TD;\n  A-->B;\n```\n",
+    );
+    let pdf_path = std::env::temp_dir().join("mdx-test-mermaid-default.pdf");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["export", "--to", "pdf", "-o"])
+        .arg(&pdf_path)
+        .arg(&tmp)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("Failed to execute mdx");
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    // PDF export loads the built-in Helvetica/Courier metrics by name
+    // (export.rs, markdown2pdf::fonts::load_builtin_font_family). A host with
+    // neither -- most Linux images ship Nimbus Sans, not Helvetica -- cannot
+    // produce a PDF at all. That is a pre-existing limitation, not something
+    // this test can assert away, so skip rather than fail spuriously in CI.
+    if stderr.contains("Could not find a font for built-in metrics") {
+        eprintln!("skipping: no Helvetica/Arial on this host, PDF export unavailable");
+        let _ = std::fs::remove_file(&tmp);
+        return;
+    }
+
+    assert!(
+        output.status.success(),
+        "an unrenderable diagram must not fail the export: {}",
+        stderr
+    );
+    assert!(pdf_path.exists(), "PDF file should be created");
+    let bytes = std::fs::read(&pdf_path).unwrap();
+    assert_eq!(&bytes[0..4], b"%PDF", "output should be a PDF");
+    assert!(
+        !stderr.contains("Uploading"),
+        "diagram source must not be uploaded without --allow-remote-render: {}",
+        stderr
+    );
+    // With mmdc installed the diagram renders and nothing is printed; without it,
+    // the fallback must name both remedies.
+    if stderr.contains("not rendered") {
+        assert!(
+            stderr.contains("mmdc"),
+            "fallback advice should mention mmdc: {}",
+            stderr
+        );
+        #[cfg(feature = "url")]
+        assert!(
+            stderr.contains("--allow-remote-render"),
+            "fallback advice should mention the opt-in flag: {}",
+            stderr
+        );
+    }
+    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(&pdf_path);
+}
+
+#[test]
+fn test_export_help_documents_allow_remote_render() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["export", "--help"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("Failed to execute mdx");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    assert!(
+        stdout.contains("--allow-remote-render"),
+        "export --help should document the remote-render opt-in: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("kroki.io"),
+        "the flag's help should name the server the source is uploaded to: {}",
+        stdout
+    );
+}
+
+// ── fmt: GFM alert round-trip ────────────────────────────────────────
+
+#[test]
+fn test_fmt_in_place_preserves_gfm_alert() {
+    // `mdx fmt --in-place` used to rewrite `> [!NOTE]` as `> \[\!NOTE\]`,
+    // permanently destroying the alert marker in the user's own file.
+    // The doubled blank line makes the file genuinely unformatted, so
+    // --in-place takes the tmp-write + rename branch (src/fmt.rs:29-36)
+    // instead of the "already formatted" short-circuit.
+    let tmp = write_tmp(
+        "fmt-alert.md",
+        "# Doc\n\n\n> [!NOTE]\n> Useful information.\n",
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["fmt", "--in-place"])
+        .arg(&tmp)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("Failed to execute mdx");
+    assert!(
+        output.status.success(),
+        "fmt --in-place should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let after = std::fs::read_to_string(&tmp).unwrap();
+    assert!(
+        after.contains("> [!NOTE]"),
+        "alert marker must survive fmt --in-place, file is now: {}",
+        after
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_fmt_stdin_alert_is_idempotent() {
+    let once = run_md_stdin(&["fmt"], "> [!NOTE]\n> Useful information.\n");
+    assert!(
+        once.contains("> [!NOTE]"),
+        "alert marker must survive fmt, got: {}",
+        once
+    );
+    let twice = run_md_stdin(&["fmt"], &once);
+    assert_eq!(once, twice, "fmt output must be stable when re-formatted");
+}
+
+#[test]
+fn test_toc_anchors_match_html_ids() {
+    // `mdx toc` used its own slugify while no renderer emitted heading ids at
+    // all, so every anchor it produced was a dead link in html/serve/publish/
+    // epub. Both sides now go through comrak's Anchorizer.
+    let tmp = write_tmp(
+        "toc-anchor-match.md",
+        "# Getting Started\n\na\n\n## Install & Setup\n\nb\n\n## Install & Setup\n\ndup\n",
+    );
+
+    let toc = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["toc", "--depth", "3"])
+        .arg(&tmp)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("Failed to execute mdx toc");
+    let toc = String::from_utf8_lossy(&toc.stdout).to_string();
+
+    let html = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["export", "--to", "html"])
+        .arg(&tmp)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("Failed to execute mdx export");
+    let html = String::from_utf8_lossy(&html.stdout).to_string();
+
+    // Every anchor the TOC emits must exist as an id in the rendered HTML.
+    let mut checked = 0;
+    for line in toc.lines() {
+        let Some(start) = line.find("](#") else {
+            continue;
+        };
+        let rest = &line[start + 3..];
+        let Some(end) = rest.find(')') else { continue };
+        let anchor = &rest[..end];
+        assert!(
+            html.contains(&format!("id=\"{}\"", anchor)),
+            "TOC anchor #{} has no matching id in the HTML output",
+            anchor
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 3,
+        "expected several anchors, checked {}",
+        checked
+    );
+
+    // Duplicate headings must get distinct anchors, not collide.
+    assert!(
+        toc.contains("#install--setup-1"),
+        "duplicate heading should be deduplicated, got: {}",
+        toc
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_global_flags_accepted_after_subcommand() {
+    let tmp = write_tmp("globals.md", "# T\n\nBody.\n");
+    for flag in [
+        vec!["--plain"],
+        vec!["--theme", "light"],
+        vec!["--width", "40"],
+        vec!["--color", "never"],
+        vec!["--syntax-theme", "InspiredGitHub"],
+    ] {
+        let mut args = vec!["toc"];
+        args.extend(flag.iter().copied());
+        let out = Command::new(env!("CARGO_BIN_EXE_mdx"))
+            .args(&args)
+            .arg(&tmp)
+            .env("NO_COLOR", "1")
+            .output()
+            .expect("Failed to execute mdx");
+        assert!(
+            out.status.success(),
+            "mdx toc {:?} should parse: {}",
+            flag,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_pager_short_still_belongs_to_serve_port() {
+    // `mdx serve f.md -p 8080` is documented; --pager must never take -p away
+    // from serve's --port.
+    let out = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["serve", "--help"])
+        .output()
+        .expect("Failed to execute mdx");
+    let help = String::from_utf8_lossy(&out.stdout);
+    assert!(help.contains("-p, --port"), "serve -p must mean --port");
+    assert!(
+        !help.contains("--pager"),
+        "--pager must not be pushed into serve"
+    );
+}
+
+#[test]
+fn test_css_reaches_html_export() {
+    let tmp = write_tmp("css-doc.md", "# T\n\nBody.\n");
+    let css = write_tmp("inject.css", "body{--mdx-marker:7}\n");
+    let out = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["--css"])
+        .arg(&css)
+        .args(["export", "--to", "html"])
+        .arg(&tmp)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("Failed to execute mdx");
+    let html = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        html.contains("--mdx-marker:7"),
+        "top-level --css used to be dead code and is now honored by export"
+    );
+    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(&css);
+}
+
+#[test]
+fn test_theme_reaches_html_export() {
+    let tmp = write_tmp("theme-doc.md", "# T\n");
+    for (flag, want) in [
+        ("light", "data-theme=\"light\""),
+        ("dark", "data-theme=\"dark\""),
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_mdx"))
+            .args(["--theme", flag, "export", "--to", "html"])
+            .arg(&tmp)
+            .env("NO_COLOR", "1")
+            .output()
+            .expect("Failed to execute mdx");
+        let html = String::from_utf8_lossy(&out.stdout);
+        assert!(html.contains(want), "--theme {} should reach export", flag);
+    }
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_export_html_keeps_the_users_own_script() {
+    // export writes a file the user opens; it converts their document
+    // faithfully rather than applying GFM's tag filter, which serve does.
+    let tmp = write_tmp(
+        "own-script.md",
+        "<script>console.log(1)</script>\n\n<div>ok</div>\n",
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["export", "--to", "html"])
+        .arg(&tmp)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("Failed to execute mdx");
+    let html = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        html.contains("console.log(1)") && !html.contains("&lt;script>console"),
+        "export must not tag-filter the user's own document"
+    );
+    let _ = std::fs::remove_file(&tmp);
 }

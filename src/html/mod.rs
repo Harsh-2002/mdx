@@ -1,34 +1,19 @@
 pub mod assets;
 
+use comrak::markdown_to_html_with_plugins;
 use comrak::options::Plugins;
 use comrak::plugins::syntect::SyntectAdapter;
-use comrak::{Options, markdown_to_html_with_plugins};
 
 use crate::cli::ThemeName;
 use assets::{
     CSS, FAVICON, FILE_ICON_SVG, JS_EDITOR, JS_EDITOR_DRAG_DROP, JS_EDITOR_MULTI, JS_EDITOR_SEARCH,
     JS_INDEX, JS_INIT, JS_KATEX, JS_LIVE, JS_LIVE_MULTI, JS_THEME_EARLY, KATEX_CSS, KATEX_JS,
-    PENCIL_SVG, PLUS_SVG, PRINT_SVG,
+    MERMAID_BOOTSTRAP, PENCIL_SVG, PLUS_SVG, PRINT_SVG,
 };
-
-fn comrak_options() -> Options<'static> {
-    let mut options = Options::default();
-    options.extension.strikethrough = true;
-    options.extension.table = true;
-    options.extension.autolink = true;
-    options.extension.tasklist = true;
-    options.extension.footnotes = true;
-    options.extension.alerts = true;
-    options.extension.front_matter_delimiter = Some("---".to_owned());
-    options.extension.math_dollars = true;
-    options.extension.math_code = true;
-    options.render.r#unsafe = true;
-    options
-}
 
 /// Render markdown to an HTML fragment (just the article body).
 pub fn render_fragment(markdown: &str, syntax_theme: &str) -> String {
-    let options = comrak_options();
+    let options = crate::options::html_options();
     let adapter = SyntectAdapter::new(Some(syntax_theme));
     let mut plugins = Plugins::default();
     plugins.render.codefence_syntax_highlighter = Some(&adapter);
@@ -36,6 +21,33 @@ pub fn render_fragment(markdown: &str, syntax_theme: &str) -> String {
 }
 
 /// Render markdown to a full HTML page with live reload (SSE) for serve mode.
+/// Escape text interpolated into the page chrome. File names reach the title,
+/// the editor label and the sidebar, and a name containing markup would
+/// otherwise execute.
+pub fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Percent-encode the characters that would break out of an href.
+fn url_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' | '\'' | '<' | '>' | '&' | ' ' | '#' | '?' => {
+                let mut buf = [0u8; 4];
+                for b in c.encode_utf8(&mut buf).as_bytes() {
+                    out.push_str(&format!("%{:02X}", b));
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 pub fn render_page(
     markdown: &str,
     syntax_theme: &str,
@@ -43,6 +55,7 @@ pub fn render_page(
     title: &str,
     custom_css: &str,
 ) -> String {
+    let title = &html_escape(title);
     let body = render_fragment(markdown, syntax_theme);
     let theme_attr = theme_strings(theme);
 
@@ -98,21 +111,7 @@ pub fn render_page(
     </div>
     <article id="content" class="markdown-body">{body}</article>
     <button id="back-to-top"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg></button>
-    <script type="module">
-        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-        mermaid.initialize({{ startOnLoad: false, theme: 'base', themeVariables: getMermaidThemeVars() }});
-        document.querySelectorAll('code.language-mermaid').forEach(el => {{
-            const pre = el.parentElement;
-            const div = document.createElement('div');
-            div.className = 'mermaid';
-            const src = el.textContent;
-            div.textContent = src;
-            div.setAttribute('data-original', src);
-            pre.replaceWith(div);
-        }});
-        await mermaid.run();
-        window.mermaid = mermaid;
-    </script>
+{MERMAID_BOOTSTRAP}
     <script>{JS_INIT}</script>
     <script>{JS_KATEX}</script>
     <script>{JS_LIVE}</script>
@@ -134,6 +133,7 @@ pub fn render_page_multi(
     current_file: &str,
     custom_css: &str,
 ) -> String {
+    let title = &html_escape(title);
     let body = render_fragment(markdown, syntax_theme);
     let theme_attr = theme_strings(theme);
 
@@ -208,21 +208,7 @@ pub fn render_page_multi(
     </div>
     <article id="content" class="markdown-body">{body}</article>
     <button id="back-to-top"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg></button>
-    <script type="module">
-        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-        mermaid.initialize({{ startOnLoad: false, theme: 'base', themeVariables: getMermaidThemeVars() }});
-        document.querySelectorAll('code.language-mermaid').forEach(el => {{
-            const pre = el.parentElement;
-            const div = document.createElement('div');
-            div.className = 'mermaid';
-            const src = el.textContent;
-            div.textContent = src;
-            div.setAttribute('data-original', src);
-            pre.replaceWith(div);
-        }});
-        await mermaid.run();
-        window.mermaid = mermaid;
-    </script>
+{MERMAID_BOOTSTRAP}
     <script>{JS_INIT}</script>
     <script>{JS_KATEX}</script>
     <script>{JS_LIVE_MULTI}</script>
@@ -242,6 +228,7 @@ pub fn render_standalone(
     title: &str,
     custom_css: &str,
 ) -> String {
+    let title = &html_escape(title);
     let body = render_fragment(markdown, syntax_theme);
     let theme_attr = theme_strings(theme);
 
@@ -274,21 +261,7 @@ pub fn render_standalone(
     <button id="theme-toggle"></button>
     <article id="content" class="markdown-body">{body}</article>
     <button id="back-to-top"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg></button>
-    <script type="module">
-        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-        mermaid.initialize({{ startOnLoad: false, theme: 'base', themeVariables: getMermaidThemeVars() }});
-        document.querySelectorAll('code.language-mermaid').forEach(el => {{
-            const pre = el.parentElement;
-            const div = document.createElement('div');
-            div.className = 'mermaid';
-            const src = el.textContent;
-            div.textContent = src;
-            div.setAttribute('data-original', src);
-            pre.replaceWith(div);
-        }});
-        await mermaid.run();
-        window.mermaid = mermaid;
-    </script>
+{MERMAID_BOOTSTRAP}
     <script>{JS_INIT}</script>
     <script>{JS_KATEX}</script>
 </body>
@@ -310,8 +283,10 @@ pub fn render_index_page(files: &[String], theme: &ThemeName, dir_mode: bool) ->
 
     let mut cards = String::new();
     for file in files {
+        let name = html_escape(file);
+        let href = url_escape(file);
         cards.push_str(&format!(
-            r#"<a class="file-card" href="/{file}"><div class="file-icon">{FILE_ICON_SVG}</div><div class="file-name">{file}</div></a>"#
+            r#"<a class="file-card" href="/{href}"><div class="file-icon">{FILE_ICON_SVG}</div><div class="file-name">{name}</div></a>"#
         ));
     }
 
@@ -349,5 +324,46 @@ fn theme_strings(theme: &ThemeName) -> &'static str {
     match theme {
         ThemeName::Dark => "dark",
         ThemeName::Light => "light",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_html_escape_neutralises_markup() {
+        assert_eq!(html_escape("a<b>&\"c"), "a&lt;b&gt;&amp;&quot;c");
+    }
+
+    #[test]
+    fn test_page_templates_escape_the_title() {
+        // A file name reaches the <title>, the editor label and the sidebar.
+        // Unescaped, a file called `a<img src=x onerror=alert(1)>.md` ran on
+        // open. Tested here rather than through a real file: those characters
+        // are illegal in a Windows filename.
+        let evil = "a<img src=x onerror=alert(1)>.md";
+        for page in [
+            render_page("# ok", "base16-ocean.dark", &ThemeName::Dark, evil, ""),
+            render_standalone("# ok", "base16-ocean.dark", &ThemeName::Dark, evil, ""),
+        ] {
+            assert!(
+                !page.contains("<img src=x"),
+                "a file name must not become a live tag"
+            );
+            assert!(page.contains("&lt;img"), "it should be escaped instead");
+        }
+    }
+
+    #[test]
+    fn test_index_cards_escape_names_and_hrefs() {
+        let files = vec!["a<img src=x>.md".to_string()];
+        let page = render_index_page(&files, &ThemeName::Dark, true);
+        assert!(!page.contains("<img src=x"), "card name must be escaped");
+        assert!(page.contains("&lt;img"), "escaped form expected");
+        assert!(
+            !page.contains(r#"href="/a<img"#),
+            "href must be percent-encoded"
+        );
     }
 }

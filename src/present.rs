@@ -8,7 +8,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Text;
 use ratatui::widgets::Paragraph;
 
-use crate::cli::{ColorMode, PresentArgs, ThemeName};
+use crate::cli::{ColorMode, PresentArgs};
 use crate::parse::parse_markdown;
 use crate::render::{self, RenderContext};
 use crate::style::theme::Theme;
@@ -23,12 +23,17 @@ struct App {
 fn render_slide(markdown: &str, term_width: u16) -> Text<'static> {
     let color_mode = ColorMode::Auto;
     let term = TerminalInfo::detect(&color_mode, Some(term_width));
-    let theme = Theme::from_name(&ThemeName::Dark);
+    let theme = Theme::from_name(crate::options::theme());
     let arena = typed_arena::Arena::new();
     let root = parse_markdown(&arena, markdown);
 
     let mut buf: Vec<u8> = Vec::new();
-    let mut ctx = RenderContext::new(&term, &theme, "base16-ocean.dark".to_string(), false);
+    let mut ctx = RenderContext::new(
+        &term,
+        &theme,
+        crate::options::syntax_theme().to_string(),
+        false,
+    );
     if render::render(&mut buf, root, &mut ctx).is_err() {
         return Text::raw("Error rendering slide");
     }
@@ -39,6 +44,64 @@ fn render_slide(markdown: &str, term_width: u16) -> Text<'static> {
     }
 }
 
+/// Split a document into slides on top-level `---` separators.
+///
+/// A naive `split("\n---\n")` runs before any parsing, which makes YAML front
+/// matter leak in as slide 1, turns a `---` inside a fenced code block into a
+/// slide break, and mistakes a setext H2 underline for one. This walks lines
+/// instead, tracking fence state, and only breaks where CommonMark would parse
+/// a thematic break rather than something else.
+fn split_slides(content: &str) -> Vec<String> {
+    let body = crate::frontmatter::strip(content);
+
+    let mut slides = Vec::new();
+    let mut current = String::new();
+    // Fence state, so a `---` inside a code block is never a slide break.
+    let mut fence = crate::text::FenceTracker::new();
+    let mut prev_blank = true; // start of document counts as a blank line
+
+    for line in body.lines() {
+        let in_fence = fence.feed(line);
+
+        // A `---` directly under a non-blank line is a setext H2 underline, not a
+        // thematic break, so it must not split.
+        let is_break = !in_fence && prev_blank && is_slide_break(line);
+
+        if is_break {
+            slides.push(std::mem::take(&mut current));
+        } else {
+            current.push_str(line);
+            current.push('\n');
+        }
+        prev_blank = line.trim().is_empty();
+    }
+    slides.push(current);
+
+    slides
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// True for a `---` slide separator: three or more dashes, optionally separated
+/// by spaces, indented less than four columns (four or more is an indented code
+/// block).
+///
+/// Deliberately dash-only. CommonMark also treats `***` and `___` as thematic
+/// breaks, but the previous `split("\n---\n")` never split on those, and decks
+/// that use them as an in-slide rule must keep working.
+fn is_slide_break(line: &str) -> bool {
+    let indent = line.len() - line.trim_start().len();
+    if indent >= 4 {
+        return false;
+    }
+    let t = line.trim();
+    t.chars().filter(|ch| !ch.is_whitespace()).count() >= 3
+        && !t.is_empty()
+        && t.chars().all(|ch| ch == '-' || ch.is_whitespace())
+}
+
 pub fn present(args: &PresentArgs) -> Result<(), Box<dyn std::error::Error>> {
     let file_path = PathBuf::from(&args.file)
         .canonicalize()
@@ -47,8 +110,7 @@ pub fn present(args: &PresentArgs) -> Result<(), Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(&file_path)
         .map_err(|e| format!("Cannot read '{}': {}", args.file, e))?;
 
-    // Split on \n---\n to create slides
-    let slide_texts: Vec<&str> = content.split("\n---\n").collect();
+    let slide_texts = split_slides(&content);
 
     if slide_texts.is_empty() {
         return Err("No slides found".into());
@@ -164,4 +226,73 @@ pub fn present(args: &PresentArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     ratatui::restore();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_front_matter_does_not_become_a_slide() {
+        let doc = "---\ntitle: Deck\nauthor: Me\n---\n\n# One\n\n---\n\n# Two\n";
+        let slides = split_slides(doc);
+        assert_eq!(slides.len(), 2, "got: {:?}", slides);
+        assert!(slides[0].starts_with("# One"), "got: {:?}", slides[0]);
+        assert!(!slides.iter().any(|s| s.contains("title: Deck")));
+    }
+
+    #[test]
+    fn test_dashes_inside_code_fence_do_not_split() {
+        let doc = "# One\n\n```yaml\na: 1\n---\nb: 2\n```\n\n---\n\n# Two\n";
+        let slides = split_slides(doc);
+        assert_eq!(slides.len(), 2, "got: {:?}", slides);
+        assert!(slides[0].contains("---"), "fence content must survive");
+        assert!(slides[1].starts_with("# Two"));
+    }
+
+    #[test]
+    fn test_tilde_fence_is_tracked() {
+        let doc = "# One\n\n~~~\n---\n~~~\n\n---\n\n# Two\n";
+        assert_eq!(split_slides(doc).len(), 2);
+    }
+
+    #[test]
+    fn test_setext_heading_is_not_a_slide_break() {
+        let doc = "Heading Two\n---\n\nBody text.\n";
+        let slides = split_slides(doc);
+        assert_eq!(slides.len(), 1, "setext H2 split the deck: {:?}", slides);
+    }
+
+    #[test]
+    fn test_plain_deck_splits() {
+        let doc = "# One\n\n---\n\n# Two\n\n---\n\n# Three\n";
+        let slides = split_slides(doc);
+        assert_eq!(slides.len(), 3);
+        assert!(slides[2].starts_with("# Three"));
+    }
+
+    #[test]
+    fn test_no_breaks_is_one_slide() {
+        assert_eq!(split_slides("# Only\n\nText.\n").len(), 1);
+    }
+
+    #[test]
+    fn test_star_and_underscore_are_not_slide_breaks() {
+        // CommonMark thematic breaks, but never slide breaks under the old
+        // split("\n---\n") behavior -- keep them in-slide.
+        assert_eq!(split_slides("# A\n\n***\n\n# B\n").len(), 1);
+        assert_eq!(split_slides("# A\n\n___\n\n# B\n").len(), 1);
+    }
+
+    #[test]
+    fn test_spaced_and_long_dash_runs_split() {
+        assert_eq!(split_slides("# A\n\n- - -\n\n# B\n").len(), 2);
+        assert_eq!(split_slides("# A\n\n-----\n\n# B\n").len(), 2);
+    }
+
+    #[test]
+    fn test_indented_dashes_are_code_not_a_break() {
+        let doc = "# A\n\n    ---\n\n# B still same slide\n";
+        assert_eq!(split_slides(doc).len(), 1);
+    }
 }

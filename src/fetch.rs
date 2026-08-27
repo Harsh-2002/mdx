@@ -11,17 +11,21 @@ enum FetchResult {
         body: String,
         server_tokens: Option<u64>,
         content_signal: Option<String>,
+        final_url: String,
     },
     /// Server returned HTML — needs local conversion.
     Html {
         body: String,
         content_signal: Option<String>,
+        final_url: String,
     },
 }
 
 fn http_agent() -> ureq::Agent {
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(30)))
+        // Without this, .call() returns Err before we can report the status.
+        .http_status_as_error(false)
         .build();
     config.into()
 }
@@ -33,6 +37,7 @@ pub fn run(args: &FetchArgs) -> Result<String, Box<dyn std::error::Error>> {
         return Err("URL must start with http:// or https://".into());
     }
 
+    eprintln!("  Fetching {}...", args.url);
     let result = fetch_content(&args.url)?;
 
     // Check Content-Signal header
@@ -42,6 +47,12 @@ pub fn run(args: &FetchArgs) -> Result<String, Box<dyn std::error::Error>> {
     };
     check_content_signal(content_signal.as_deref());
 
+    let final_url = match &result {
+        FetchResult::Markdown { final_url, .. } | FetchResult::Html { final_url, .. } => {
+            final_url.clone()
+        }
+    };
+
     let (markdown, meta, tokens) = match result {
         FetchResult::Markdown {
             body,
@@ -50,15 +61,17 @@ pub fn run(args: &FetchArgs) -> Result<String, Box<dyn std::error::Error>> {
         } => {
             eprintln!("  Server provided markdown directly");
             let token_count = server_tokens.unwrap_or_else(|| crate::estimate_tokens(&body));
-            let meta = extract_front_matter_meta(&body);
+            let meta = article_meta_from_front_matter(&body);
+            // Strip it, or --metadata emits a second block and comrak reads the
+            // first one only.
+            let body = crate::frontmatter::strip(&body).to_string();
             (body, meta, token_count)
         }
         FetchResult::Html { body, .. } => {
             let (md, meta) = if args.raw {
-                let sanitized = sanitize_html(&body);
-                (convert_raw(&sanitized)?, None)
+                (raw_fallback(&body), extract_meta_only(&body, &final_url))
             } else {
-                extract_readable(&body, &args.url)
+                extract_readable(&body, &final_url)
             };
             let token_count = crate::estimate_tokens(&md);
             (md, meta, token_count)
@@ -74,11 +87,11 @@ pub fn run(args: &FetchArgs) -> Result<String, Box<dyn std::error::Error>> {
     if args.metadata {
         let token_arg = if args.tokens { Some(tokens) } else { None };
         if let Some(ref m) = meta {
-            output.push_str(&format_front_matter(m, &args.url, token_arg));
+            output.push_str(&format_front_matter(m, &final_url, token_arg));
         } else {
             output.push_str(&format_front_matter(
                 &ArticleMeta::default(),
-                &args.url,
+                &final_url,
                 token_arg,
             ));
         }
@@ -87,7 +100,18 @@ pub fn run(args: &FetchArgs) -> Result<String, Box<dyn std::error::Error>> {
     output.push_str(&markdown);
 
     if let Some(ref path) = args.output {
-        std::fs::write(path, &output)?;
+        if output.trim().is_empty() {
+            return Err(
+                format!("Extraction produced no content; refusing to write {}", path).into(),
+            );
+        }
+        if let Some(parent) = std::path::Path::new(path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Cannot create '{}': {}", parent.display(), e))?;
+        }
+        std::fs::write(path, &output).map_err(|e| format!("Cannot write '{}': {}", path, e))?;
         eprintln!("  Wrote {}", path);
     }
 
@@ -106,6 +130,12 @@ fn fetch_content(url: &str) -> Result<FetchResult, Box<dyn std::error::Error>> {
     if !(200..300).contains(&status) {
         return Err(format!("HTTP {} for {}", status, url).into());
     }
+
+    // Must be read before into_body(), which consumes the extensions holding it.
+    let final_url = {
+        use ureq::ResponseExt;
+        resp.get_uri().to_string()
+    };
 
     let content_type = resp
         .headers()
@@ -127,35 +157,81 @@ fn fetch_content(url: &str) -> Result<FetchResult, Box<dyn std::error::Error>> {
         .map(|v| v.to_string());
 
     if content_type.contains("text/markdown") {
-        let body = resp
-            .into_body()
-            .with_config()
-            .limit(MAX_BODY_SIZE)
-            .read_to_string()?;
+        let body = read_body(resp)?;
         return Ok(FetchResult::Markdown {
             body,
             server_tokens,
             content_signal,
+            final_url,
         });
     }
 
-    if !content_type.contains("text/html") && !content_type.contains("application/xhtml") {
+    // GitHub serves raw .md as text/plain, and some servers send no type at all.
+    let looks_markdown = url_path_is_markdown(url);
+    if content_type.contains("text/plain") && looks_markdown {
+        let body = read_body(resp)?;
+        return Ok(FetchResult::Markdown {
+            body,
+            server_tokens,
+            content_signal,
+            final_url,
+        });
+    }
+
+    let sniff_html = content_type.is_empty();
+    if !content_type.contains("text/html")
+        && !content_type.contains("application/xhtml")
+        && !sniff_html
+    {
         return Err(format!(
-            "URL returned unsupported content type ({}). Expected text/markdown or text/html.",
+            "URL returned unsupported content type ({}). Expected text/markdown, text/html, \
+             or text/plain for a .md URL.",
             content_type
         )
         .into());
     }
 
-    let body = resp
-        .into_body()
-        .with_config()
-        .limit(MAX_BODY_SIZE)
-        .read_to_string()?;
+    if sniff_html {
+        let body = read_body(resp)?;
+        let head = body.trim_start().to_ascii_lowercase();
+        if !head.starts_with("<!doctype") && !head.starts_with("<html") {
+            return Ok(FetchResult::Markdown {
+                body,
+                server_tokens,
+                content_signal,
+                final_url,
+            });
+        }
+        return Ok(FetchResult::Html {
+            body,
+            content_signal,
+            final_url,
+        });
+    }
+
+    let body = read_body(resp)?;
     Ok(FetchResult::Html {
         body,
         content_signal,
+        final_url,
     })
+}
+
+fn read_body(resp: ureq::http::Response<ureq::Body>) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(resp
+        .into_body()
+        .with_config()
+        .limit(MAX_BODY_SIZE)
+        // A page in a legacy encoding, or with a stray invalid byte, must not
+        // fail the whole fetch.
+        .lossy_utf8(true)
+        .read_to_string()?)
+}
+
+fn url_path_is_markdown(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".md") || lower.ends_with(".markdown")
 }
 
 /// Check Content-Signal header for ai-input=no directive.
@@ -180,7 +256,7 @@ fn sanitize_html(html: &str) -> String {
     for tag in &["script", "style", "noscript", "iframe", "object", "embed"] {
         // Remove both opening+content+closing and self-closing variants
         loop {
-            let lower = result.to_lowercase();
+            let lower = result.to_ascii_lowercase();
             let open = format!("<{}", tag);
             if let Some(start) = lower.find(&open) {
                 let close_tag = format!("</{}>", tag);
@@ -204,7 +280,7 @@ fn sanitize_html(html: &str) -> String {
     // Neutralize dangerous URL schemes in href and src attributes
     for attr in &["href", "src"] {
         loop {
-            let lower = result.to_lowercase();
+            let lower = result.to_ascii_lowercase();
             let mut found = false;
             for scheme in &["javascript:", "data:", "vbscript:"] {
                 // Look for attr="scheme..." or attr='scheme...'
@@ -248,6 +324,13 @@ struct ArticleMeta {
     site_name: Option<String>,
 }
 
+/// Metadata without the article body, for --raw. dom_smoothie already parses
+/// OpenGraph, Twitter and JSON-LD, so this needs no parser of its own.
+fn extract_meta_only(html: &str, url: &str) -> Option<ArticleMeta> {
+    let (_, meta) = extract_readable(html, url);
+    meta
+}
+
 fn extract_readable(html: &str, url: &str) -> (String, Option<ArticleMeta>) {
     let cfg = dom_smoothie::Config {
         text_mode: dom_smoothie::TextMode::Markdown,
@@ -262,7 +345,7 @@ fn extract_readable(html: &str, url: &str) -> (String, Option<ArticleMeta>) {
                     eprintln!(
                         "  Warning: readability returned empty content, falling back to raw conversion"
                     );
-                    let md = clean_markdown(&convert_raw(html).unwrap_or_default());
+                    let md = raw_fallback(html);
                     return (md, None);
                 }
                 let meta = ArticleMeta {
@@ -290,7 +373,7 @@ fn extract_readable(html: &str, url: &str) -> (String, Option<ArticleMeta>) {
                     "  Warning: readability extraction failed ({}), falling back to raw conversion",
                     e
                 );
-                let md = clean_markdown(&convert_raw(html).unwrap_or_default());
+                let md = raw_fallback(html);
                 (md, None)
             }
         },
@@ -299,10 +382,22 @@ fn extract_readable(html: &str, url: &str) -> (String, Option<ArticleMeta>) {
                 "  Warning: readability init failed ({}), falling back to raw conversion",
                 e
             );
-            let md = clean_markdown(&convert_raw(html).unwrap_or_default());
+            let md = raw_fallback(html);
             (md, None)
         }
     }
+}
+
+/// Sanitise, then convert. Every path that hands raw page HTML to htmd must go
+/// through here: htmd renders <script>/<style> children as text, so an
+/// unsanitised fallback turns a JS bundle into article prose.
+fn raw_fallback(html: &str) -> String {
+    convert_raw(&sanitize_html(html)).unwrap_or_default()
+}
+
+/// Characters CommonMark allows before a block marker on the same line.
+fn is_block_prefix(c: char) -> bool {
+    c.is_ascii_digit() || matches!(c, ' ' | '\t' | '-' | '+' | '*' | '>' | '.' | ')')
 }
 
 fn convert_raw(html: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -316,7 +411,18 @@ fn convert_raw(html: &str) -> Result<String, Box<dyn std::error::Error>> {
 fn clean_markdown(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut consecutive_blanks = 0u32;
+    let mut fence = crate::text::FenceTracker::new();
+
     for line in input.lines() {
+        // The closing delimiter belongs to the block too.
+        let was_in_fence = fence.in_fence();
+        if fence.feed(line) || was_in_fence {
+            out.push_str(line);
+            out.push('\n');
+            consecutive_blanks = 0;
+            continue;
+        }
+
         if line.trim().is_empty() {
             consecutive_blanks += 1;
             if consecutive_blanks <= 2 {
@@ -326,34 +432,34 @@ fn clean_markdown(input: &str) -> String {
         }
         consecutive_blanks = 0;
 
-        let mut chars = line.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '\\' {
-                if let Some(&next) = chars.peek() {
-                    // Keep escapes that are meaningful in markdown
-                    if matches!(
-                        next,
-                        '*' | '_' | '`' | '[' | ']' | '<' | '>' | '~' | '|' | '\\' | '#'
-                    ) {
-                        out.push(c);
-                        out.push(next);
-                        chars.next();
-                    } else {
-                        // Drop the backslash, keep the character
-                        out.push(next);
-                        chars.next();
-                    }
-                } else {
-                    out.push(c);
-                }
-            } else {
+        let mut chars = line.char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            let Some(&(_, next)) = chars.peek() else {
+                out.push(c);
+                continue;
+            };
+            // An escape whose whole prefix is a block prefix is suppressing
+            // block syntax: dropping it turns "1999\. It was" into an ordered
+            // list, and "- 1999\. x" into a nested one.
+            let list_marker =
+                matches!(next, '.' | ')' | '+' | '-') && line[..i].chars().all(is_block_prefix);
+            let meaningful = matches!(
+                next,
+                '*' | '_' | '`' | '[' | ']' | '<' | '>' | '~' | '|' | '\\' | '#'
+            );
+            if meaningful || list_marker {
                 out.push(c);
             }
+            out.push(next);
+            chars.next();
         }
         out.push('\n');
     }
 
-    // Trim trailing whitespace
     let trimmed = out.trim_end();
     let mut result = trimmed.to_string();
     result.push('\n');
@@ -362,11 +468,24 @@ fn clean_markdown(input: &str) -> String {
 
 /// Escape a string value for safe embedding in a YAML double-quoted string.
 fn yaml_escape(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            // A crafted <title> otherwise writes raw ESC/BEL into the file, and
+            // `cat` then executes them.
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\x{:02x}", c as u32))
+            }
+            '\u{85}' | '\u{2028}' | '\u{2029}' => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn format_front_matter(meta: &ArticleMeta, url: &str, tokens: Option<u64>) -> String {
@@ -400,42 +519,25 @@ fn format_front_matter(meta: &ArticleMeta, url: &str, tokens: Option<u64>) -> St
     fm
 }
 
-/// Parse YAML front matter from server-provided markdown into ArticleMeta.
-fn extract_front_matter_meta(markdown: &str) -> Option<ArticleMeta> {
-    let trimmed = markdown.trim_start();
-    if !trimmed.starts_with("---") {
+/// Shared front-matter parser, so a document yields the same title here as it
+/// does in publish and search.
+fn article_meta_from_front_matter(markdown: &str) -> Option<ArticleMeta> {
+    // frontmatter::parse requires the delimiter at byte 0, so the guard and
+    // the parser must see the same string.
+    let markdown = markdown.trim_start();
+    if !markdown.starts_with("---") {
         return None;
     }
-
-    // Find the closing ---
-    let after_open = &trimmed[3..];
-    let after_open = after_open.trim_start_matches(['\r', '\n']);
-    let close_pos = after_open.find("\n---")?;
-    let front_matter = &after_open[..close_pos];
-
-    let mut meta = ArticleMeta::default();
-    for line in front_matter.lines() {
-        let line = line.trim();
-        if let Some((key, val)) = line.split_once(':') {
-            let key = key.trim();
-            let val = val.trim().trim_matches('"');
-            if val.is_empty() {
-                continue;
-            }
-            match key {
-                "title" => meta.title = Some(val.to_string()),
-                "author" => meta.byline = Some(val.to_string()),
-                "date" => meta.published_time = Some(val.to_string()),
-                "excerpt" => meta.excerpt = Some(val.to_string()),
-                "image" => meta.image = Some(val.to_string()),
-                "url" => meta.url = Some(val.to_string()),
-                "site_name" => meta.site_name = Some(val.to_string()),
-                _ => {}
-            }
-        }
-    }
-
-    Some(meta)
+    let fm = crate::frontmatter::parse(markdown);
+    Some(ArticleMeta {
+        title: fm.title,
+        byline: fm.author,
+        published_time: fm.date,
+        excerpt: fm.excerpt,
+        image: fm.image,
+        site_name: fm.site_name,
+        url: fm.url,
+    })
 }
 
 #[cfg(test)]
@@ -477,9 +579,9 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_front_matter_meta() {
+    fn test_article_meta_from_front_matter() {
         let md = "---\ntitle: \"My Page\"\nauthor: \"Jane\"\nimage: \"https://example.com/img.png\"\nsite_name: \"Example\"\n---\n\n# Content";
-        let meta = extract_front_matter_meta(md).unwrap();
+        let meta = article_meta_from_front_matter(md).unwrap();
         assert_eq!(meta.title.as_deref(), Some("My Page"));
         assert_eq!(meta.byline.as_deref(), Some("Jane"));
         assert_eq!(meta.image.as_deref(), Some("https://example.com/img.png"));
@@ -487,9 +589,9 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_front_matter_meta_none() {
+    fn test_article_meta_from_front_matter_none() {
         let md = "# No front matter\n\nJust content.";
-        assert!(extract_front_matter_meta(md).is_none());
+        assert!(article_meta_from_front_matter(md).is_none());
     }
 
     #[test]
@@ -558,5 +660,128 @@ mod tests {
         assert!(fm.contains("image: \"https://example.com/img.jpg\""));
         assert!(fm.contains("url: \"https://example.com/page\""));
         assert!(fm.contains("site_name: \"Example Site\""));
+    }
+    #[test]
+    fn test_clean_markdown_keeps_backslashes_in_code_fences() {
+        let input = "```\nr\"\\d+\\s*\"\n```\n";
+        let out = clean_markdown(input);
+        assert!(out.contains("\\d+"), "regex escapes must survive: {}", out);
+        assert!(out.contains("\\s*"), "regex escapes must survive: {}", out);
+    }
+
+    #[test]
+    fn test_clean_markdown_keeps_blank_lines_in_fences() {
+        let input = "```\na\n\n\n\nb\n```\n";
+        let out = clean_markdown(input);
+        assert!(
+            out.contains("a\n\n\n\nb"),
+            "diagram spacing must survive: {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn test_clean_markdown_does_not_manufacture_a_list() {
+        let out = clean_markdown("1999\\. It was a good year.\n");
+        assert!(
+            out.starts_with("1999\\."),
+            "leading escape must be kept or the line becomes an ol: {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn test_clean_markdown_still_drops_pointless_escapes() {
+        let out = clean_markdown("Some text with escaped \\. period.\n");
+        assert!(out.contains("escaped . period"), "got: {:?}", out);
+    }
+
+    #[test]
+    fn test_sanitize_html_is_ascii_offset_safe() {
+        // U+0130 grows a byte when lowercased; offsets found in a lowercased
+        // copy used to be applied to the original.
+        let html = "<p>\u{130}stanbul</p><script>evil()</script><p>after</p>";
+        let out = sanitize_html(html);
+        assert!(!out.to_lowercase().contains("<script"));
+        assert!(out.contains("stanbul"), "content must survive: {}", out);
+        assert!(out.contains("after"), "content must survive: {}", out);
+    }
+
+    #[test]
+    fn test_raw_fallback_strips_scripts() {
+        let html = "<html><body><div id=root>App</div>\
+                    <script>var SECRET='sk-1';</script></body></html>";
+        let md = raw_fallback(html);
+        assert!(
+            !md.contains("SECRET"),
+            "script body must not become prose: {}",
+            md
+        );
+        assert!(md.contains("App"), "real content must survive: {}", md);
+    }
+    #[test]
+    fn test_url_path_is_markdown() {
+        assert!(url_path_is_markdown("https://x/README.md"));
+        assert!(url_path_is_markdown("https://x/a.MARKDOWN"));
+        assert!(url_path_is_markdown("https://x/a.md?raw=1"));
+        assert!(url_path_is_markdown("https://x/a.md#top"));
+        assert!(!url_path_is_markdown("https://x/index.html"));
+        assert!(!url_path_is_markdown("https://x/"));
+    }
+    #[test]
+    fn test_yaml_escape_neutralises_control_characters() {
+        let out = yaml_escape("a\u{1b}[31mb\u{7}c");
+        assert!(
+            !out.contains('\u{1b}'),
+            "ESC must not reach the file: {}",
+            out
+        );
+        assert!(
+            !out.contains('\u{7}'),
+            "BEL must not reach the file: {}",
+            out
+        );
+        assert!(
+            out.contains("\\x1b") && out.contains("\\x07"),
+            "got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn test_yaml_escape_keeps_ordinary_text() {
+        assert_eq!(
+            yaml_escape("Caf\u{e9} \u{65e5}\u{672c}"),
+            "Caf\u{e9} \u{65e5}\u{672c}"
+        );
+    }
+    #[test]
+    fn test_clean_markdown_protects_nested_list_escapes() {
+        // "- 1999\\. x" must not become a nested ordered list.
+        let out = clean_markdown("- 1999\\. nested\n");
+        assert!(out.contains("1999\\."), "got: {:?}", out);
+    }
+
+    #[test]
+    fn test_clean_markdown_drops_mid_sentence_escapes() {
+        let out = clean_markdown("foo \\. bar\n");
+        assert!(out.contains("foo . bar"), "got: {:?}", out);
+    }
+
+    #[test]
+    fn test_clean_markdown_protects_indented_and_bullet_escapes() {
+        assert!(clean_markdown("    1999\\. x\n").contains("1999\\."));
+        assert!(clean_markdown("\\- not a bullet\n").contains("\\-"));
+        assert!(clean_markdown("> 1\\) quoted\n").contains("1\\)"));
+    }
+
+    #[test]
+    fn test_clean_markdown_is_idempotent() {
+        let once = clean_markdown("1999\\. It was\n\n```\nr\"\\d+\"\n```\n");
+        assert_eq!(
+            once,
+            clean_markdown(&once),
+            "second pass must not strip more"
+        );
     }
 }

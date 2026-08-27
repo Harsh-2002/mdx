@@ -17,6 +17,12 @@ fn main() {
 
     let args = Args::parse();
 
+    md::options::set_presentation(md::options::Presentation {
+        theme: args.theme.clone(),
+        syntax_theme: args.syntax_theme.clone(),
+        custom_css: md::options::load_css_file(args.css.as_deref()),
+    });
+
     // Handle subcommands
     #[cfg(feature = "serve")]
     if let Some(md::cli::Command::Serve(ref serve_args)) = args.command {
@@ -108,6 +114,7 @@ fn main() {
             file: export_args.file.clone(),
             to: export_args.to.clone(),
             output: export_args.output.clone(),
+            allow_remote_render: export_args.allow_remote_render,
         };
         md::export::run(&ea).unwrap_or_else(|e| {
             eprintln!("Error: {}", e);
@@ -145,7 +152,9 @@ fn main() {
         let theme = Theme::from_name(&args.theme);
         let arena = typed_arena::Arena::new();
         let root = parse_markdown(&arena, &markdown);
-        if args.pager {
+        // --pager is the one render flag that is not global, so the root and
+        // subcommand forms have to be OR-ed.
+        if args.pager || fetch_args.pager {
             render_with_pager(root, &term, &theme, &args.syntax_theme, args.plain, None);
         } else {
             let stdout = io::stdout();
@@ -203,6 +212,7 @@ fn main() {
         let pa = md::publish::PublishArgs {
             dir: publish_args.dir.clone(),
             out: publish_args.out.clone(),
+            unsafe_html: publish_args.unsafe_html,
         };
         md::publish::run(&pa).unwrap_or_else(|e| {
             eprintln!("Error: {}", e);
@@ -221,12 +231,30 @@ fn main() {
 
     // Handle --generate-man
     if args.generate_man {
-        let cmd = <Args as clap::CommandFactory>::command();
-        let man = clap_mangen::Man::new(cmd);
-        man.render(&mut io::stdout()).unwrap_or_else(|e| {
-            eprintln!("Error generating man page: {}", e);
-            std::process::exit(1);
-        });
+        // disable_help_subcommand keeps clap's synthetic `help` command out of the
+        // generated pages, matching clap_mangen::generate_to. build() then populates
+        // each subcommand's display_name as "mdx-<name>", which Man::new uses as the
+        // page title.
+        let mut cmd = <Args as clap::CommandFactory>::command().disable_help_subcommand(true);
+        cmd.build();
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+
+        let render = |c: clap::Command, out: &mut dyn Write| {
+            if let Err(e) = clap_mangen::Man::new(c).render(out) {
+                eprintln!("Error generating man page: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        render(cmd.clone(), &mut out);
+        // clap_mangen's SUBCOMMANDS section lists names and one-line descriptions
+        // only, so no subcommand flag was documented anywhere. Emit a full page per
+        // subcommand into the same stream; each carries its own .TH header, which is
+        // how concatenated man pages are conventionally shipped.
+        for sub in cmd.get_subcommands().filter(|s| !s.is_hide_set()) {
+            render(sub.clone(), &mut out);
+        }
         return;
     }
 

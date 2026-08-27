@@ -8,6 +8,7 @@ pub mod fmt;
 pub mod frontmatter;
 pub mod html;
 pub mod lint;
+pub mod options;
 pub mod parse;
 #[cfg(feature = "watch")]
 pub mod present;
