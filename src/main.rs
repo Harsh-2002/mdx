@@ -221,12 +221,30 @@ fn main() {
 
     // Handle --generate-man
     if args.generate_man {
-        let cmd = <Args as clap::CommandFactory>::command();
-        let man = clap_mangen::Man::new(cmd);
-        man.render(&mut io::stdout()).unwrap_or_else(|e| {
-            eprintln!("Error generating man page: {}", e);
-            std::process::exit(1);
-        });
+        // disable_help_subcommand keeps clap's synthetic `help` command out of the
+        // generated pages, matching clap_mangen::generate_to. build() then populates
+        // each subcommand's display_name as "mdx-<name>", which Man::new uses as the
+        // page title.
+        let mut cmd = <Args as clap::CommandFactory>::command().disable_help_subcommand(true);
+        cmd.build();
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+
+        let render = |c: clap::Command, out: &mut dyn Write| {
+            if let Err(e) = clap_mangen::Man::new(c).render(out) {
+                eprintln!("Error generating man page: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        render(cmd.clone(), &mut out);
+        // clap_mangen's SUBCOMMANDS section lists names and one-line descriptions
+        // only, so no subcommand flag was documented anywhere. Emit a full page per
+        // subcommand into the same stream; each carries its own .TH header, which is
+        // how concatenated man pages are conventionally shipped.
+        for sub in cmd.get_subcommands().filter(|s| !s.is_hide_set()) {
+            render(sub.clone(), &mut out);
+        }
         return;
     }
 

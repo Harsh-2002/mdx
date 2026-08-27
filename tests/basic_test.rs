@@ -1010,6 +1010,41 @@ fn test_generate_man() {
 }
 
 #[test]
+fn test_generate_man_documents_subcommand_flags() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .arg("--generate-man")
+        .output()
+        .expect("Failed to execute mdx");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // One page per subcommand, each with its own .TH header.
+    let pages = stdout.matches(".TH").count();
+    assert!(
+        pages > 1,
+        "Expected a page per subcommand, found {} .TH header(s)",
+        pages
+    );
+    assert!(
+        stdout.contains(".TH mdx-export"),
+        "Subcommand pages should be titled mdx-<name>"
+    );
+    assert!(
+        stdout.contains(".TH mdx-fetch"),
+        "every subcommand should get a page"
+    );
+    assert!(
+        !stdout.contains(".TH mdx-help"),
+        "clap's synthetic help subcommand should not get a page"
+    );
+    // Subcommand-level flags were previously absent from the man page entirely.
+    assert!(
+        stdout.contains("\\-\\-to") || stdout.contains("--to"),
+        "export's --to flag should be documented"
+    );
+}
+
+#[test]
 fn test_completions_bash() {
     let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
         .args(["completions", "bash"])
