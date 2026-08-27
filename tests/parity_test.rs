@@ -257,7 +257,9 @@ const MATRIX: &[Row] = &[
     Row {
         fixture: "superscript",
         probes: &[&["superscript probe"]],
-        term: OkWith(&[&["\u{b2}"]]),
+        // Unicode where the terminal supports it, ^2^ where it does not:
+        // detect_unicode() is false without a UTF-8 locale, as on Windows CI.
+        term: OkWith(&[&["\u{b2}", "^2^"]]),
         html: Full,
         txt: Full,
         json: Full,
