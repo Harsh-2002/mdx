@@ -583,7 +583,7 @@ fn render_block<'a>(
                 *first_h1_seen = true;
             }
 
-            doc.push(elements::Break::new(1.5));
+            doc.push(elements::Break::new(1.5_f32));
             let mut p = elements::Paragraph::default();
             let base = style::Style::new()
                 .with_font_size(size)
@@ -607,7 +607,7 @@ fn render_block<'a>(
                 );
                 doc.push(rule);
             }
-            doc.push(elements::Break::new(0.8));
+            doc.push(elements::Break::new(0.8_f32));
         }
         NodeValue::Paragraph => {
             drop(data);
@@ -617,7 +617,7 @@ fn render_block<'a>(
                 .with_color(style::Color::Rgb(30, 30, 30));
             collect_inline(&mut p, node, base, mono_font);
             doc.push(p);
-            doc.push(elements::Break::new(0.5));
+            doc.push(elements::Break::new(0.5_f32));
 
             // Embed any local images found in this paragraph
             embed_inline_images(doc, node);
@@ -632,15 +632,15 @@ fn render_block<'a>(
                 && let Some((img_element, path)) =
                     render_mermaid_to_image(&literal, temp_files.len())
             {
-                doc.push(elements::Break::new(0.5));
+                doc.push(elements::Break::new(0.5_f32));
                 doc.push(img_element);
-                doc.push(elements::Break::new(0.5));
+                doc.push(elements::Break::new(0.5_f32));
                 temp_files.push(path);
                 return;
             }
 
             // Regular code block: monospace font with soft background
-            doc.push(elements::Break::new(0.5));
+            doc.push(elements::Break::new(0.5_f32));
 
             // Language label above the code block
             if !info.is_empty() {
@@ -654,7 +654,7 @@ fn render_block<'a>(
                         .with_color(style::Color::Rgb(130, 130, 140)),
                 );
                 doc.push(lang_p);
-                doc.push(elements::Break::new(0.15));
+                doc.push(elements::Break::new(0.15_f32));
             }
 
             let code_style = style::Style::new()
@@ -679,14 +679,14 @@ fn render_block<'a>(
                 3, // vertical padding (mm)
                 4, // horizontal padding (mm)
             ));
-            doc.push(elements::Break::new(0.5));
+            doc.push(elements::Break::new(0.5_f32));
         }
         NodeValue::List(list) => {
             let lt = list.list_type;
             let start = list.start;
             drop(data);
             render_list(doc, node, lt, start, temp_files, mono_font, first_h1_seen);
-            doc.push(elements::Break::new(0.3));
+            doc.push(elements::Break::new(0.3_f32));
         }
         NodeValue::Item(_) | NodeValue::TaskItem(_) => {
             // Handled by render_list
@@ -694,7 +694,7 @@ fn render_block<'a>(
         }
         NodeValue::BlockQuote => {
             drop(data);
-            doc.push(elements::Break::new(0.3));
+            doc.push(elements::Break::new(0.3_f32));
             let bar_color = style::Color::Rgb(180, 185, 195);
             for child in node.children() {
                 let cd = child.data.borrow();
@@ -711,13 +711,13 @@ fn render_block<'a>(
                     );
                     collect_inline(&mut p, child, qs, mono_font);
                     doc.push(p);
-                    doc.push(elements::Break::new(0.2));
+                    doc.push(elements::Break::new(0.2_f32));
                 } else {
                     drop(cd);
                     render_block(doc, child, temp_files, mono_font, first_h1_seen);
                 }
             }
-            doc.push(elements::Break::new(0.3));
+            doc.push(elements::Break::new(0.3_f32));
         }
         NodeValue::Table(_) => {
             drop(data);
@@ -725,7 +725,7 @@ fn render_block<'a>(
         }
         NodeValue::ThematicBreak => {
             drop(data);
-            doc.push(elements::Break::new(0.5));
+            doc.push(elements::Break::new(0.5_f32));
             let mut p = elements::Paragraph::default();
             p.set_alignment(genpdfi::Alignment::Center);
             p.push_styled(
@@ -733,7 +733,7 @@ fn render_block<'a>(
                 style::Style::new().with_color(style::Color::Rgb(200, 200, 205)),
             );
             doc.push(p);
-            doc.push(elements::Break::new(0.5));
+            doc.push(elements::Break::new(0.5_f32));
         }
         NodeValue::FrontMatter(_)
         | NodeValue::HtmlBlock(_)
@@ -866,7 +866,7 @@ fn embed_inline_images<'a>(doc: &mut genpdfi::Document, node: &'a AstNode<'a>) {
             if let Ok(img_element) = elements::Image::from_path(path) {
                 let img_element = scale_image_to_fit(img_element, path);
                 doc.push(img_element.with_alignment(genpdfi::Alignment::Center));
-                doc.push(elements::Break::new(0.5));
+                doc.push(elements::Break::new(0.5_f32));
             }
         } else {
             drop(data);
@@ -960,7 +960,7 @@ fn render_list<'a>(
                     }
                     collect_inline(&mut p, item_child, body_style, mono_font);
                     doc.push(p);
-                    doc.push(elements::Break::new(0.15));
+                    doc.push(elements::Break::new(0.15_f32));
                 }
                 NodeValue::List(sub_list) => {
                     let lt = sub_list.list_type;
@@ -968,7 +968,7 @@ fn render_list<'a>(
                     drop(cd);
                     // Nested list with indentation
                     doc.push(elements::PaddedElement::new(
-                        elements::Break::new(0.0),
+                        elements::Break::new(0.0_f32),
                         genpdfi::Margins::trbl(0, 0, 0, 6),
                     ));
                     render_list(
@@ -1054,9 +1054,9 @@ fn render_table<'a>(
         is_header = false;
     }
 
-    doc.push(elements::Break::new(0.3));
+    doc.push(elements::Break::new(0.3_f32));
     doc.push(table);
-    doc.push(elements::Break::new(0.5));
+    doc.push(elements::Break::new(0.5_f32));
 }
 
 // ─── Alert Block Rendering ───────────────────────────────────────────────────
@@ -1077,7 +1077,7 @@ fn render_alert_block<'a>(
         AlertType::Caution => ("Caution", style::Color::Rgb(207, 34, 46)),
     };
 
-    doc.push(elements::Break::new(0.3));
+    doc.push(elements::Break::new(0.3_f32));
 
     // Bold colored label
     let mut label_p = elements::Paragraph::default();
@@ -1089,7 +1089,7 @@ fn render_alert_block<'a>(
             .with_color(color),
     );
     doc.push(label_p);
-    doc.push(elements::Break::new(0.2));
+    doc.push(elements::Break::new(0.2_f32));
 
     // Render children with blockquote-style prefix
     for child in node.children() {
@@ -1103,14 +1103,14 @@ fn render_alert_block<'a>(
             p.push_styled("  \u{2502} ", style::Style::new().with_color(color));
             collect_inline(&mut p, child, qs, mono_font);
             doc.push(p);
-            doc.push(elements::Break::new(0.2));
+            doc.push(elements::Break::new(0.2_f32));
         } else {
             drop(cd);
             render_block(doc, child, temp_files, mono_font, first_h1_seen);
         }
     }
 
-    doc.push(elements::Break::new(0.3));
+    doc.push(elements::Break::new(0.3_f32));
 }
 
 // ─── Footnote Rendering ─────────────────────────────────────────────────────
@@ -1138,14 +1138,14 @@ fn render_footnotes<'a>(
     }
 
     // Separator
-    doc.push(elements::Break::new(1.5));
+    doc.push(elements::Break::new(1.5_f32));
     let mut sep = elements::Paragraph::default();
     sep.push_styled(
         "\u{2500}".repeat(40),
         style::Style::new().with_color(style::Color::Rgb(200, 200, 205)),
     );
     doc.push(sep);
-    doc.push(elements::Break::new(0.5));
+    doc.push(elements::Break::new(0.5_f32));
 
     // Footnote entries
     let fn_style = style::Style::new()
@@ -1157,7 +1157,7 @@ fn render_footnotes<'a>(
         p.push_styled(format!("[{}] ", name), fn_style.bold());
         p.push_styled(text, fn_style);
         doc.push(p);
-        doc.push(elements::Break::new(0.2));
+        doc.push(elements::Break::new(0.2_f32));
     }
 }
 
