@@ -536,6 +536,70 @@ fn extract_title<'a>(root: &'a AstNode<'a>) -> Option<String> {
 
 // ─── EPUB Export via epub-builder ────────────────────────────────────────────
 
+/// Split a document into chapters at top-level headings.
+///
+/// A single `content.xhtml` gives a reader no navigation at all, so Apple
+/// Books, Kobo and Calibre show one undifferentiated blob no matter how many
+/// headings the source had. Splits on `#`, falling back to `##` when the
+/// document has fewer than two `#` headings (the common "one H1 title, H2
+/// sections" shape). Fence-aware, so a `# comment` inside a code block is not
+/// mistaken for a heading.
+///
+/// Returns `(title, markdown)` pairs. Content before the first heading becomes
+/// its own leading chapter.
+fn split_chapters(markdown: &str) -> Vec<(String, String)> {
+    for depth in [1usize, 2] {
+        let prefix = format!("{} ", "#".repeat(depth));
+        let mut fence = crate::text::FenceTracker::new();
+        let mut chapters: Vec<(String, String)> = Vec::new();
+        let mut current = String::new();
+        let mut current_title: Option<String> = None;
+
+        for line in markdown.lines() {
+            let in_fence = fence.feed(line);
+            if !in_fence
+                && let Some(rest) = line.strip_prefix(&prefix)
+                && !rest.trim().is_empty()
+            {
+                if current_title.is_some() || !current.trim().is_empty() {
+                    chapters.push((
+                        current_title.take().unwrap_or_default(),
+                        std::mem::take(&mut current),
+                    ));
+                }
+                current_title = Some(rest.trim().to_string());
+            }
+            current.push_str(line);
+            current.push('\n');
+        }
+        if current_title.is_some() || !current.trim().is_empty() {
+            chapters.push((current_title.unwrap_or_default(), current));
+        }
+
+        // Only accept this depth if it actually produced navigation.
+        if chapters.len() > 1 {
+            return chapters;
+        }
+    }
+    vec![(String::new(), markdown.to_string())]
+}
+
+/// Wrap an XHTML body fragment in the document skeleton every chapter needs.
+fn wrap_xhtml(title: &str, body: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <title>{title}</title>
+    <link rel="stylesheet" type="text/css" href="stylesheet.css" />
+</head>
+<body>
+{body}
+</body>
+</html>"#
+    )
+}
+
 fn export_epub(
     markdown: &str,
     output_path: &str,
@@ -576,26 +640,15 @@ fn export_epub(
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
     let (processed_html, images) = process_images(&html_fragment, &base_dir);
-    let xhtml_body = html_to_xhtml(&processed_html);
-
-    let xhtml = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-    <title>{title}</title>
-    <link rel="stylesheet" type="text/css" href="stylesheet.css" />
-</head>
-<body>
-{xhtml_body}
-</body>
-</html>"#
-    );
 
     let mut builder = EpubBuilder::new(ZipLibrary::new()?)?;
     builder.epub_version(EpubVersion::V30);
     builder.metadata("title", &title)?;
-    if let Some(ref date) = fm.date {
-        builder.metadata("description", format!("Date: {}", date))?;
+    // EPUB 3 requires dc:language; readers and validators reject a book without
+    // it. Front matter can override the default.
+    builder.metadata("lang", fm.lang.clone().unwrap_or_else(|| "en".to_string()))?;
+    if let Some(ref author) = fm.author {
+        builder.metadata("author", author.clone())?;
     }
     for tag in &fm.tags {
         builder.metadata("subject", tag)?;
@@ -607,7 +660,35 @@ fn export_epub(
         builder.add_resource(epub_path, bytes.as_slice(), mime)?;
     }
 
-    builder.add_content(EpubContent::new("content.xhtml", xhtml.as_bytes()).title(&title))?;
+    // One XHTML document per chapter, so readers get real navigation. The
+    // images were already rewritten above, so re-render per chapter from the
+    // markdown and reuse the shared resource pool.
+    // Strip front matter first, or the YAML block becomes a phantom chapter 1.
+    let chapters = split_chapters(crate::frontmatter::strip(markdown));
+    if chapters.len() > 1 {
+        for (i, (chapter_title, body)) in chapters.iter().enumerate() {
+            let fragment = crate::html::render_fragment(body, "base16-ocean.dark");
+            let (fragment, _) = process_images(&fragment, &base_dir);
+            let xhtml = wrap_xhtml(
+                if chapter_title.is_empty() {
+                    &title
+                } else {
+                    chapter_title
+                },
+                &html_to_xhtml(&fragment),
+            );
+            let href = format!("chapter_{:03}.xhtml", i + 1);
+            let label = if chapter_title.is_empty() {
+                title.clone()
+            } else {
+                chapter_title.clone()
+            };
+            builder.add_content(EpubContent::new(&href, xhtml.as_bytes()).title(label))?;
+        }
+    } else {
+        let xhtml = wrap_xhtml(&title, &html_to_xhtml(&processed_html));
+        builder.add_content(EpubContent::new("content.xhtml", xhtml.as_bytes()).title(&title))?;
+    }
 
     let mut output_file = std::fs::File::create(output_path)?;
     builder.generate(&mut output_file)?;
@@ -1869,5 +1950,56 @@ mod output_path_tests {
     #[test]
     fn test_default_output_path_handles_no_extension() {
         assert_eq!(default_output_path(Some("LICENSE"), "pdf"), "LICENSE.pdf");
+    }
+}
+
+#[cfg(test)]
+mod chapter_tests {
+    use super::*;
+
+    #[test]
+    fn test_splits_on_h1() {
+        let ch = split_chapters("# One\n\na\n\n# Two\n\nb\n");
+        assert_eq!(ch.len(), 2);
+        assert_eq!(ch[0].0, "One");
+        assert_eq!(ch[1].0, "Two");
+    }
+
+    #[test]
+    fn test_falls_back_to_h2_when_only_one_h1() {
+        let ch = split_chapters("# Title\n\nintro\n\n## Alpha\n\na\n\n## Beta\n\nb\n");
+        let titles: Vec<&str> = ch.iter().map(|c| c.0.as_str()).collect();
+        // The leading chunk holds the H1 and the intro but has no H2 of its
+        // own, so its title is empty; export_epub substitutes the document
+        // title for it, which is what reaches the reader's table of contents.
+        assert_eq!(titles, vec!["", "Alpha", "Beta"]);
+        assert!(ch[0].1.contains("# Title"));
+    }
+
+    #[test]
+    fn test_heading_inside_code_fence_is_not_a_chapter() {
+        let ch = split_chapters("# One\n\n```sh\n# not a heading\n# nor this\n```\n\n# Two\n");
+        assert_eq!(ch.len(), 2, "fenced # lines must not split: {:?}", ch);
+    }
+
+    #[test]
+    fn test_no_headings_is_a_single_chapter() {
+        let ch = split_chapters("Just prose.\n\nMore prose.\n");
+        assert_eq!(ch.len(), 1);
+        assert!(ch[0].0.is_empty(), "untitled chapter");
+    }
+
+    #[test]
+    fn test_content_before_first_heading_becomes_its_own_chapter() {
+        let ch = split_chapters("Preamble text.\n\n# One\n\na\n\n# Two\n\nb\n");
+        assert_eq!(ch.len(), 3);
+        assert!(ch[0].0.is_empty());
+        assert!(ch[0].1.contains("Preamble"));
+    }
+
+    #[test]
+    fn test_empty_heading_does_not_start_a_chapter() {
+        let ch = split_chapters("# \n\ntext\n");
+        assert_eq!(ch.len(), 1);
     }
 }

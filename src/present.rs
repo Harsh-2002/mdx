@@ -51,29 +51,16 @@ fn split_slides(content: &str) -> Vec<String> {
 
     let mut slides = Vec::new();
     let mut current = String::new();
-    let mut fence: Option<(char, usize)> = None;
+    // Fence state, so a `---` inside a code block is never a slide break.
+    let mut fence = crate::text::FenceTracker::new();
     let mut prev_blank = true; // start of document counts as a blank line
 
     for line in body.lines() {
-        let trimmed = line.trim_start();
-        // Track fenced code blocks so their contents are never scanned for breaks.
-        let fence_char = trimmed.chars().next().filter(|c| *c == '`' || *c == '~');
-        if let Some(fc) = fence_char {
-            let run = trimmed.chars().take_while(|c| *c == fc).count();
-            if run >= 3 {
-                match fence {
-                    // A closing fence must match the opening char and be at least
-                    // as long; anything else is content.
-                    Some((open_c, open_len)) if open_c == fc && run >= open_len => fence = None,
-                    None => fence = Some((fc, run)),
-                    _ => {}
-                }
-            }
-        }
+        let in_fence = fence.feed(line);
 
         // A `---` directly under a non-blank line is a setext H2 underline, not a
         // thematic break, so it must not split.
-        let is_break = fence.is_none() && prev_blank && is_slide_break(line);
+        let is_break = !in_fence && prev_blank && is_slide_break(line);
 
         if is_break {
             slides.push(std::mem::take(&mut current));
