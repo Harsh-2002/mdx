@@ -112,7 +112,7 @@ All modes include:
 **Security defaults**
 
 - Binds `127.0.0.1` — the preview is reachable only from this machine. `--host 0.0.0.0` exposes it to your network, and the server is unauthenticated: anyone who can reach the port can read your files, overwrite them, create new ones and upload into `./assets`.
-- Raw HTML inside markdown is dropped, so a `<script>` in a downloaded or agent-written document cannot run in your browser. `--unsafe-html` renders it the way GitHub does — `<div>`, `<details>` and badge tables pass, while GFM's tagfilter still neutralises `<script>`, `<iframe>` and friends. This affects READMEs: `<details>` collapsibles and `<div align="center">` logo/badge blocks are dropped whole — tags *and* the content between them — because an HTML block runs to the next blank line. Markdown images, tables, code fences, math, mermaid and GFM alerts are unaffected.
+- Raw HTML inside markdown is dropped, so a `<script>` in a downloaded or agent-written document cannot run in your browser. `--unsafe-html` renders it the way GitHub does — `<div>`, `<details>` and badge tables pass, while GFM's tagfilter still neutralises `<script>`, `<iframe>` and friends. `mdx export` is different: it writes a file you open yourself, so it converts your document faithfully, tags and all. This affects READMEs: `<details>` collapsibles and `<div align="center">` logo/badge blocks are dropped whole — tags *and* the content between them — because an HTML block runs to the next blank line. Markdown images, tables, code fences, math, mermaid and GFM alerts are unaffected.
 
 | Key | Action |
 |-----|--------|

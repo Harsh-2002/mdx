@@ -21,6 +21,33 @@ pub fn render_fragment(markdown: &str, syntax_theme: &str) -> String {
 }
 
 /// Render markdown to a full HTML page with live reload (SSE) for serve mode.
+/// Escape text interpolated into the page chrome. File names reach the title,
+/// the editor label and the sidebar, and a name containing markup would
+/// otherwise execute.
+pub fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Percent-encode the characters that would break out of an href.
+fn url_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' | '\'' | '<' | '>' | '&' | ' ' | '#' | '?' => {
+                let mut buf = [0u8; 4];
+                for b in c.encode_utf8(&mut buf).as_bytes() {
+                    out.push_str(&format!("%{:02X}", b));
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 pub fn render_page(
     markdown: &str,
     syntax_theme: &str,
@@ -28,6 +55,7 @@ pub fn render_page(
     title: &str,
     custom_css: &str,
 ) -> String {
+    let title = &html_escape(title);
     let body = render_fragment(markdown, syntax_theme);
     let theme_attr = theme_strings(theme);
 
@@ -105,6 +133,7 @@ pub fn render_page_multi(
     current_file: &str,
     custom_css: &str,
 ) -> String {
+    let title = &html_escape(title);
     let body = render_fragment(markdown, syntax_theme);
     let theme_attr = theme_strings(theme);
 
@@ -199,6 +228,7 @@ pub fn render_standalone(
     title: &str,
     custom_css: &str,
 ) -> String {
+    let title = &html_escape(title);
     let body = render_fragment(markdown, syntax_theme);
     let theme_attr = theme_strings(theme);
 
@@ -253,8 +283,10 @@ pub fn render_index_page(files: &[String], theme: &ThemeName, dir_mode: bool) ->
 
     let mut cards = String::new();
     for file in files {
+        let name = html_escape(file);
+        let href = url_escape(file);
         cards.push_str(&format!(
-            r#"<a class="file-card" href="/{file}"><div class="file-icon">{FILE_ICON_SVG}</div><div class="file-name">{file}</div></a>"#
+            r#"<a class="file-card" href="/{href}"><div class="file-icon">{FILE_ICON_SVG}</div><div class="file-name">{name}</div></a>"#
         ));
     }
 

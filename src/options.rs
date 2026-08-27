@@ -44,9 +44,6 @@ pub fn markdown_options() -> Options<'static> {
     options.extension.footnotes = true;
     options.extension.alerts = true;
 
-    // GFM output safety; inert for the terminal, matters for serve/publish.
-    options.extension.tagfilter = true;
-
     // Docs extensions. Each needs a render arm in every target -- the terminal
     // renderer's `_ => {}` means an extension without one renders as nothing.
     options.extension.description_lists = true;
@@ -88,9 +85,18 @@ pub fn allow_raw_html() -> bool {
     ALLOW_RAW_HTML.load(Ordering::Relaxed)
 }
 
+static TAGFILTER: AtomicBool = AtomicBool::new(true);
+
+/// Turn GFM's tagfilter off. Only `export` does: it converts a document the
+/// user named into a file they open themselves, rather than serving an origin.
+pub fn set_tagfilter(on: bool) {
+    TAGFILTER.store(on, Ordering::Relaxed);
+}
+
 /// Options for the HTML renderer (`serve`, `export`, `publish`).
 pub fn html_options() -> Options<'static> {
     let mut options = markdown_options();
+    options.extension.tagfilter = TAGFILTER.load(Ordering::Relaxed);
     // Emit id= on every heading, so `mdx toc` links resolve and deep links
     // work. Only the HTML targets: the terminal has nothing to link to. The
     // browser assets assign `heading-N` only when an id is absent, so these

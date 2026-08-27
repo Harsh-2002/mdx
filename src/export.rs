@@ -77,6 +77,9 @@ pub fn run(args: &ExportArgs) -> Result<(), Box<dyn std::error::Error>> {
     // it keeps rendering raw HTML. serve and publish default the other way and
     // gate it behind --unsafe-html.
     crate::options::set_allow_raw_html(true);
+    // export writes a file the user opens, not an origin: convert their
+    // document faithfully rather than applying GFM's tag filter.
+    crate::options::set_tagfilter(false);
 
     let content = read_input(&args.file)?;
     let title = args.file.as_deref().unwrap_or("document");
