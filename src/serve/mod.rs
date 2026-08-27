@@ -36,6 +36,12 @@ fn bind_ip(host: &str) -> Result<IpAddr, Box<dyn std::error::Error>> {
     if host.eq_ignore_ascii_case("localhost") {
         return Ok(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
     }
+    // `[::1]` is how an IPv6 literal is written in a URL, and it is what the
+    // banner prints, so accept the form we hand the user back.
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
     match host.parse::<IpAddr>() {
         Ok(ip) => Ok(ip),
         Err(_) => {
@@ -1504,5 +1510,31 @@ mod path_tests {
     #[test]
     fn test_nul_rejected() {
         assert!(!is_plain_file_name("a\0b.md"));
+    }
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+
+    #[test]
+    fn test_bind_ip_accepts_bracketed_ipv6() {
+        assert!(bind_ip("[::1]").is_ok(), "the banner prints this form");
+        assert!(bind_ip("::1").is_ok());
+    }
+
+    #[test]
+    fn test_bind_ip_accepts_the_usual_forms() {
+        assert!(bind_ip("127.0.0.1").is_ok());
+        assert!(bind_ip("0.0.0.0").is_ok());
+        assert!(bind_ip("localhost").is_ok());
+        assert!(bind_ip("LocalHost").is_ok());
+    }
+
+    #[test]
+    fn test_bind_ip_rejects_junk() {
+        assert!(bind_ip("example.com").is_err());
+        assert!(bind_ip("").is_err());
+        assert!(bind_ip("[not-an-ip]").is_err());
     }
 }

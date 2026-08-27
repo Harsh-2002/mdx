@@ -522,7 +522,10 @@ fn format_front_matter(meta: &ArticleMeta, url: &str, tokens: Option<u64>) -> St
 /// Shared front-matter parser, so a document yields the same title here as it
 /// does in publish and search.
 fn article_meta_from_front_matter(markdown: &str) -> Option<ArticleMeta> {
-    if !markdown.trim_start().starts_with("---") {
+    // frontmatter::parse requires the delimiter at byte 0, so the guard and
+    // the parser must see the same string.
+    let markdown = markdown.trim_start();
+    if !markdown.starts_with("---") {
         return None;
     }
     let fm = crate::frontmatter::parse(markdown);
