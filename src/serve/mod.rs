@@ -828,6 +828,27 @@ fn resolve_static_path(base: &std::path::Path, rel: &str) -> Option<PathBuf> {
     Some(resolved)
 }
 
+/// True when `name` is a single plain path segment.
+///
+/// A string check for '/', '\\' and ".." is not enough: on Windows a
+/// drive-relative name like "C:evil.md" carries a prefix, and PathBuf::push
+/// replaces the whole path rather than appending when it sees one.
+fn is_plain_file_name(name: &str) -> bool {
+    if name.is_empty() || name.contains('\0') || name.contains('\\') {
+        return false;
+    }
+    // Rejected on every platform, not just Windows: the guard must not depend
+    // on where the server runs. On Linux "C:evil.md" is a legal file name, so
+    // the component walk below would accept it.
+    let b = name.as_bytes();
+    if b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic() {
+        return false;
+    }
+    let mut components = std::path::Path::new(name).components();
+    matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
+}
+
 fn static_not_found() -> Response {
     (StatusCode::NOT_FOUND, "Not found").into_response()
 }
@@ -1040,7 +1061,7 @@ async fn put_source_multi(
     // an unauthenticated arbitrary file write -- reachable from the network,
     // since the server binds 0.0.0.0.
     let in_served_dir = || {
-        if file.contains('/') || file.contains('\\') || file.contains("..") {
+        if !is_plain_file_name(&file) {
             return None;
         }
         state.dir_path.as_ref().map(|d| d.join(&file))
@@ -1069,11 +1090,7 @@ async fn create_file(State(state): State<Arc<AppState>>, body: String) -> (Statu
     if !filename.ends_with(".md") {
         filename.push_str(".md");
     }
-    if filename.contains('/')
-        || filename.contains('\\')
-        || filename.contains("..")
-        || filename.len() > 255
-    {
+    if !is_plain_file_name(&filename) || filename.len() > 255 {
         return (StatusCode::BAD_REQUEST, "Invalid filename".to_string());
     }
 
@@ -1454,5 +1471,38 @@ mod tests {
         assert_eq!(sanitize_upload_filename("a:b.png"), "ab.png");
         assert_eq!(sanitize_upload_filename(".."), "upload.png");
         assert_eq!(sanitize_upload_filename(""), "upload.png");
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn test_plain_file_names_accepted() {
+        assert!(is_plain_file_name("notes.md"));
+        assert!(is_plain_file_name("a b.md"));
+        assert!(is_plain_file_name("café.md"));
+    }
+
+    #[test]
+    fn test_separators_and_traversal_rejected() {
+        for bad in ["a/b.md", "a\\b.md", "..", "../x.md", "", "/abs.md"] {
+            assert!(!is_plain_file_name(bad), "{:?} must be rejected", bad);
+        }
+    }
+
+    #[test]
+    fn test_drive_relative_name_rejected() {
+        // On Windows "C:evil.md" is a prefix component and PathBuf::push would
+        // replace the served directory entirely. A string check for / \ and ..
+        // does not catch it.
+        assert!(!is_plain_file_name("C:evil.md"));
+        assert!(!is_plain_file_name(r"\\?\C:\evil.md"));
+    }
+
+    #[test]
+    fn test_nul_rejected() {
+        assert!(!is_plain_file_name("a\0b.md"));
     }
 }
