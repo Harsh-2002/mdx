@@ -21,11 +21,18 @@ pub struct ExportArgs {
     pub file: Option<String>,
     pub to: String,
     pub output: Option<String>,
+    /// Opt-in to rendering mermaid diagrams via the kroki.io web API, which
+    /// uploads the diagram source. Off unless the user passes the flag.
+    pub allow_remote_render: bool,
 }
 
 pub fn run(args: &ExportArgs) -> Result<(), Box<dyn std::error::Error>> {
     let content = read_input(&args.file)?;
     let title = args.file.as_deref().unwrap_or("document");
+
+    if args.allow_remote_render && args.to != "pdf" {
+        eprintln!("  --allow-remote-render only affects --to pdf; ignoring");
+    }
 
     match args.to.as_str() {
         "html" => {
@@ -60,7 +67,7 @@ pub fn run(args: &ExportArgs) -> Result<(), Box<dyn std::error::Error>> {
                         .map(|f| f.replace(".md", ".pdf").replace(".markdown", ".pdf"))
                 })
                 .unwrap_or_else(|| "output.pdf".to_string());
-            export_pdf(&content, &output_path)?;
+            export_pdf(&content, &output_path, args.allow_remote_render)?;
         }
         "epub" => {
             let output_path = args
@@ -475,7 +482,22 @@ fn html_to_xhtml(html: &str) -> String {
 
 // ─── PDF Export via genpdfi ───────────────────────────────────────────────────
 
-pub fn export_pdf(markdown: &str, output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn export_pdf(
+    markdown: &str,
+    output_path: &str,
+    allow_remote_render: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::atomic::Ordering;
+
+    // Park the opt-in for the duration of this export; see ALLOW_REMOTE_RENDER.
+    ALLOW_REMOTE_RENDER.store(allow_remote_render, Ordering::Relaxed);
+    MERMAID_WARNED.store(false, Ordering::Relaxed);
+
+    #[cfg(not(feature = "url"))]
+    if allow_remote_render {
+        eprintln!("  --allow-remote-render has no effect in this build (no remote support)");
+    }
+
     let arena = typed_arena::Arena::new();
     let root = parse_markdown(&arena, markdown);
 
@@ -536,7 +558,10 @@ pub fn export_pdf(markdown: &str, output_path: &str) -> Result<(), Box<dyn std::
     for path in &temp_files {
         let _ = std::fs::remove_file(path);
     }
-    let _ = std::fs::remove_dir(std::env::temp_dir().join("md-mermaid-export"));
+    // remove_dir only ever succeeded on an empty directory, so a failed mmdc run
+    // (which leaves mmdc_output.png behind) leaked the directory forever. The
+    // directory is now this process's alone, so removing it recursively is safe.
+    let _ = std::fs::remove_dir_all(mermaid_temp_dir());
 
     eprintln!("  Wrote {}", output_path);
     Ok(())
@@ -627,8 +652,11 @@ fn render_block<'a>(
             let literal = cb.literal.clone();
             drop(data);
 
-            // Mermaid diagrams: render as image via kroki.io
-            if info == "mermaid"
+            let is_mermaid = info == "mermaid";
+
+            // Mermaid diagrams: render as an image when a renderer is available
+            // (local mmdc, or kroki.io when --allow-remote-render was passed).
+            if is_mermaid
                 && let Some((img_element, path)) =
                     render_mermaid_to_image(&literal, temp_files.len())
             {
@@ -639,15 +667,27 @@ fn render_block<'a>(
                 return;
             }
 
+            // No renderer available: fall through to a labelled source block so the
+            // export still succeeds, and say once how to get a real diagram.
+            if is_mermaid {
+                warn_mermaid_not_rendered();
+            }
+
             // Regular code block: monospace font with soft background
             doc.push(elements::Break::new(0.5_f32));
 
             // Language label above the code block
-            if !info.is_empty() {
-                let lang = info.split_whitespace().next().unwrap_or(&info);
+            let label = if is_mermaid {
+                Some("mermaid (diagram not rendered - showing source)".to_string())
+            } else if info.is_empty() {
+                None
+            } else {
+                Some(info.split_whitespace().next().unwrap_or(&info).to_string())
+            };
+            if let Some(label) = label {
                 let mut lang_p = elements::Paragraph::default();
                 lang_p.push_styled(
-                    format!("  {}", lang),
+                    format!("  {}", label),
                     style::Style::new()
                         .with_font_size(8)
                         .with_font_family(mono_font)
@@ -1163,12 +1203,65 @@ fn render_footnotes<'a>(
 
 // ─── Mermaid Diagram Rendering ───────────────────────────────────────────────
 
+/// Whether the user opted in to remote diagram rendering for this export.
+///
+/// Set once by `export_pdf` before the AST walk. The mermaid renderer is reached
+/// through the recursive `render_block`/`render_list` walk, and `render_list`
+/// already takes 7 arguments, so threading a flag down would trip
+/// `clippy::too_many_arguments`. Defaults to false: diagram source never leaves
+/// the machine unless `--allow-remote-render` was passed.
+static ALLOW_REMOTE_RENDER: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Set on the first unrendered diagram so the advice is printed once per export,
+/// however many mermaid blocks the document contains.
+static MERMAID_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Temp directory for mermaid intermediates, scoped to this process.
+///
+/// Concurrent exports previously shared one directory and fixed file names, so
+/// they overwrote each other's input and output. Same PID reasoning as the
+/// code-block background above; owning the whole directory also makes the
+/// end-of-export cleanup safe to do recursively.
+fn mermaid_temp_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("md-mermaid-export-{}", std::process::id()))
+}
+
+/// Print, at most once per export, why a mermaid diagram was left as source.
+fn warn_mermaid_not_rendered() {
+    use std::sync::atomic::Ordering;
+    if MERMAID_WARNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+
+    #[cfg(feature = "url")]
+    if ALLOW_REMOTE_RENDER.load(Ordering::Relaxed) {
+        eprintln!(
+            "  Mermaid diagram not rendered (source shown instead) - no usable image \
+             came back from mmdc or from kroki.io"
+        );
+        return;
+    }
+
+    #[cfg(feature = "url")]
+    eprintln!(
+        "  Mermaid diagram not rendered (source shown instead) - install mmdc to \
+         render locally, or pass --allow-remote-render to upload the source to kroki.io"
+    );
+
+    #[cfg(not(feature = "url"))]
+    eprintln!(
+        "  Mermaid diagram not rendered (source shown instead) - install mmdc \
+         (npm install -g @mermaid-js/mermaid-cli) to render it locally"
+    );
+}
+
 /// Render a mermaid code block as a PNG image for PDF embedding.
 /// Returns the genpdfi Image element and the temp file path for cleanup.
 fn render_mermaid_to_image(code: &str, index: usize) -> Option<(elements::Image, PathBuf)> {
     let png_bytes = render_mermaid_png(code)?;
 
-    let temp_dir = std::env::temp_dir().join("md-mermaid-export");
+    let temp_dir = mermaid_temp_dir();
     let _ = std::fs::create_dir_all(&temp_dir);
 
     // Convert PNG (RGBA) to JPEG (RGB) — genpdfi doesn't support alpha channel
@@ -1240,14 +1333,18 @@ fn convert_png_to_jpeg(
     Err("Image conversion requires the 'images' feature".into())
 }
 
-/// Try to render mermaid to PNG. Tries mmdc CLI first, then kroki.io API.
+/// Try to render mermaid to PNG. Uses the local mmdc CLI; falls back to the
+/// kroki.io web API only when the user passed `--allow-remote-render`, because
+/// that fallback sends the diagram source to a third-party server.
 fn render_mermaid_png(code: &str) -> Option<Vec<u8>> {
     if let Some(data) = render_mermaid_mmdc(code) {
         return Some(data);
     }
 
     #[cfg(feature = "url")]
-    if let Some(data) = render_mermaid_kroki(code) {
+    if ALLOW_REMOTE_RENDER.load(std::sync::atomic::Ordering::Relaxed)
+        && let Some(data) = render_mermaid_kroki(code)
+    {
         return Some(data);
     }
 
@@ -1256,7 +1353,7 @@ fn render_mermaid_png(code: &str) -> Option<Vec<u8>> {
 
 /// Render mermaid to PNG using the mmdc CLI (mermaid-cli, works offline).
 fn render_mermaid_mmdc(code: &str) -> Option<Vec<u8>> {
-    let temp_dir = std::env::temp_dir().join("md-mermaid-export");
+    let temp_dir = mermaid_temp_dir();
     let _ = std::fs::create_dir_all(&temp_dir);
     let input_path = temp_dir.join("mmdc_input.mmd");
     let output_path = temp_dir.join("mmdc_output.png");
@@ -1293,11 +1390,19 @@ fn render_mermaid_mmdc(code: &str) -> Option<Vec<u8>> {
 }
 
 /// Render mermaid to PNG using the kroki.io web API (no browser needed).
+///
+/// Uploads the diagram source. Only ever called with `--allow-remote-render`.
 #[cfg(feature = "url")]
 fn render_mermaid_kroki(code: &str) -> Option<Vec<u8>> {
+    const KROKI_ENDPOINT: &str = "https://kroki.io/mermaid/png";
     // Use neutral theme for clean, soft diagram style
     let themed_code = format!("%%{{init: {{\"theme\": \"neutral\"}}}}%%\n{}", code);
-    let resp = ureq::post("https://kroki.io/mermaid/png")
+    eprintln!(
+        "  Uploading mermaid source ({} bytes) to {}",
+        themed_code.len(),
+        KROKI_ENDPOINT
+    );
+    let resp = ureq::post(KROKI_ENDPOINT)
         .header("Content-Type", "text/plain")
         .send(&themed_code)
         .ok()?;
@@ -1479,5 +1584,37 @@ fn extract_plain_text<'a>(root: &'a AstNode<'a>) -> String {
         String::new()
     } else {
         format!("{}\n", trimmed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mermaid_temp_dir_is_process_scoped() {
+        let dir = mermaid_temp_dir();
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(
+            name.ends_with(&std::process::id().to_string()),
+            "mermaid temp dir must carry the pid so concurrent exports cannot collide: {}",
+            name
+        );
+        assert_ne!(
+            dir,
+            std::env::temp_dir().join("md-mermaid-export"),
+            "the old shared directory must not be reused"
+        );
+    }
+
+    #[test]
+    fn remote_render_is_off_by_default() {
+        use std::sync::atomic::Ordering;
+        // Valid only while no unit test in this binary calls export_pdf, which
+        // sets this process-global. Drop this test if one is ever added.
+        assert!(
+            !ALLOW_REMOTE_RENDER.load(Ordering::Relaxed),
+            "diagram source must never be uploaded unless --allow-remote-render set it"
+        );
     }
 }

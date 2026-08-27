@@ -1519,6 +1519,87 @@ fn test_export_epub_custom_output() {
     let _ = std::fs::remove_file(&custom_output);
 }
 
+// ── PDF export: mermaid never leaves the machine unasked ─────────────
+
+#[test]
+fn test_export_pdf_mermaid_never_uploads_without_flag() {
+    let tmp = write_tmp(
+        "mermaid.md",
+        "# Diagram\n\n```mermaid\ngraph TD;\n  A-->B;\n```\n",
+    );
+    let pdf_path = std::env::temp_dir().join("mdx-test-mermaid-default.pdf");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["export", "--to", "pdf", "-o"])
+        .arg(&pdf_path)
+        .arg(&tmp)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("Failed to execute mdx");
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    // PDF export loads the built-in Helvetica/Courier metrics by name
+    // (export.rs, markdown2pdf::fonts::load_builtin_font_family). A host with
+    // neither -- most Linux images ship Nimbus Sans, not Helvetica -- cannot
+    // produce a PDF at all. That is a pre-existing limitation, not something
+    // this test can assert away, so skip rather than fail spuriously in CI.
+    if stderr.contains("Could not find a font for built-in metrics") {
+        eprintln!("skipping: no Helvetica/Arial on this host, PDF export unavailable");
+        let _ = std::fs::remove_file(&tmp);
+        return;
+    }
+
+    assert!(
+        output.status.success(),
+        "an unrenderable diagram must not fail the export: {}",
+        stderr
+    );
+    assert!(pdf_path.exists(), "PDF file should be created");
+    let bytes = std::fs::read(&pdf_path).unwrap();
+    assert_eq!(&bytes[0..4], b"%PDF", "output should be a PDF");
+    assert!(
+        !stderr.contains("Uploading"),
+        "diagram source must not be uploaded without --allow-remote-render: {}",
+        stderr
+    );
+    // With mmdc installed the diagram renders and nothing is printed; without it,
+    // the fallback must name both remedies.
+    if stderr.contains("not rendered") {
+        assert!(
+            stderr.contains("mmdc"),
+            "fallback advice should mention mmdc: {}",
+            stderr
+        );
+        #[cfg(feature = "url")]
+        assert!(
+            stderr.contains("--allow-remote-render"),
+            "fallback advice should mention the opt-in flag: {}",
+            stderr
+        );
+    }
+    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(&pdf_path);
+}
+
+#[test]
+fn test_export_help_documents_allow_remote_render() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["export", "--help"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("Failed to execute mdx");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    assert!(
+        stdout.contains("--allow-remote-render"),
+        "export --help should document the remote-render opt-in: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("kroki.io"),
+        "the flag's help should name the server the source is uploaded to: {}",
+        stdout
+    );
+}
+
 // ── fmt: GFM alert round-trip ────────────────────────────────────────
 
 #[test]

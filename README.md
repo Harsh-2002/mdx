@@ -148,9 +148,12 @@ mdx export --to epub README.md              # EPUB e-book (Apple Books, Kobo, Ca
 mdx export --to json README.md              # AST as JSON
 mdx export --to txt README.md               # plain text (strip formatting)
 mdx export --to pdf -o out.pdf file.md      # custom output path
+mdx export --to pdf --allow-remote-render f.md  # let kroki.io render mermaid
 ```
 
 EPUB export embeds local images, maps front matter to EPUB metadata (title, tags), and preserves syntax-highlighted code blocks.
+
+PDF export renders mermaid diagrams with the local [mmdc](https://github.com/mermaid-js/mermaid-cli) CLI (`npm install -g @mermaid-js/mermaid-cli`). If mmdc is not installed, the diagram is written into the PDF as a labelled source block and the export still succeeds. Pass `--allow-remote-render` to fall back to the kroki.io web API instead — this uploads your diagram source to a third-party server, so it is off by default.
 
 ### `mdx stats` — Document statistics
 

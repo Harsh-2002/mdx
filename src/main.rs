@@ -108,6 +108,7 @@ fn main() {
             file: export_args.file.clone(),
             to: export_args.to.clone(),
             output: export_args.output.clone(),
+            allow_remote_render: export_args.allow_remote_render,
         };
         md::export::run(&ea).unwrap_or_else(|e| {
             eprintln!("Error: {}", e);

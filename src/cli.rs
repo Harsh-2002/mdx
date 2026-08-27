@@ -218,6 +218,10 @@ pub struct ExportArgs {
     /// Output file path (for pdf/epub: defaults to input filename with matching extension)
     #[arg(short, long, value_hint = ValueHint::FilePath)]
     pub output: Option<String>,
+
+    /// Allow uploading mermaid source to kroki.io when mmdc is missing (pdf only)
+    #[arg(long)]
+    pub allow_remote_render: bool,
 }
 
 #[derive(clap::Args, Debug)]
