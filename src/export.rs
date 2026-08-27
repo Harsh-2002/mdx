@@ -1015,10 +1015,11 @@ fn render_block<'a>(
             let max_chars = 71;
             let mut layout = elements::LinearLayout::vertical();
             for line in literal.lines() {
-                let mut p = elements::Paragraph::default();
-                let display = truncate_line(line, max_chars);
-                p.push_styled(display, code_style);
-                layout.push(p);
+                for display in wrap_code_line(line, max_chars) {
+                    let mut p = elements::Paragraph::default();
+                    p.push_styled(display, code_style);
+                    layout.push(p);
+                }
             }
 
             // Soft gray background behind code content
@@ -1226,20 +1227,6 @@ fn embed_inline_images<'a>(doc: &mut genpdfi::Document, node: &'a AstNode<'a>) {
 #[cfg(not(feature = "images"))]
 fn embed_inline_images<'a>(_doc: &mut genpdfi::Document, _node: &'a AstNode<'a>) {}
 
-/// Truncate a line to max_chars, adding ellipsis if truncated. UTF-8 safe.
-fn truncate_line(line: &str, max_chars: usize) -> String {
-    let char_count = line.chars().count();
-    if char_count <= max_chars {
-        return line.to_string();
-    }
-    // Find byte boundary at max_chars characters
-    if let Some((idx, _)) = line.char_indices().nth(max_chars) {
-        format!("{}\u{2026}", &line[..idx])
-    } else {
-        line.to_string()
-    }
-}
-
 fn render_list<'a>(
     doc: &mut genpdfi::Document,
     node: &'a AstNode<'a>,
@@ -1323,20 +1310,57 @@ fn render_list<'a>(
     }
 }
 
+/// Hard-wrap an over-long code line instead of truncating it.
+///
+/// genpdfi cannot break a string with no spaces, and the previous behaviour
+/// silently discarded everything past the cut.
+fn wrap_code_line(line: &str, max_chars: usize) -> Vec<String> {
+    if max_chars == 0 || line.chars().count() <= max_chars {
+        return vec![line.to_string()];
+    }
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for c in line.chars() {
+        if current.chars().count() == max_chars {
+            out.push(std::mem::take(&mut current));
+        }
+        current.push(c);
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
 fn render_table<'a>(
     doc: &mut genpdfi::Document,
     node: &'a AstNode<'a>,
     mono_font: genpdfi::fonts::FontFamily<genpdfi::fonts::Font>,
 ) {
-    // Count columns from first row
+    // Widest row, not the first: a row with more cells than the header would
+    // otherwise make push() fail and silently drop the whole row.
     let num_cols = node
         .children()
-        .next()
+        .filter(|r| matches!(&r.data.borrow().value, NodeValue::TableRow(_)))
         .map(|r| r.children().count())
+        .max()
         .unwrap_or(0);
     if num_cols == 0 {
         return;
     }
+
+    let alignments: Vec<genpdfi::Alignment> = match &node.data.borrow().value {
+        NodeValue::Table(t) => t
+            .alignments
+            .iter()
+            .map(|a| match a {
+                comrak::nodes::TableAlignment::Right => genpdfi::Alignment::Right,
+                comrak::nodes::TableAlignment::Center => genpdfi::Alignment::Center,
+                _ => genpdfi::Alignment::Left,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
 
     let column_weights = vec![1; num_cols];
     let mut table = elements::TableLayout::new(column_weights);
@@ -1363,9 +1387,14 @@ fn render_table<'a>(
         };
 
         let mut row = table.row();
-        for cell_node in row_node.children() {
+        let mut cells = 0usize;
+        for (col, cell_node) in row_node.children().enumerate() {
             let mut p = elements::Paragraph::default();
+            if let Some(a) = alignments.get(col) {
+                p.set_alignment(*a);
+            }
             collect_inline(&mut p, cell_node, cell_style, mono_font);
+            cells += 1;
             if is_header {
                 row.push_element(
                     FilledElement::new(
@@ -1383,7 +1412,13 @@ fn render_table<'a>(
                 ));
             }
         }
-        let _ = row.push();
+        // Short rows must be padded or push() rejects the whole row.
+        for _ in cells..num_cols {
+            row.push_element(elements::Paragraph::default());
+        }
+        if row.push().is_err() {
+            eprintln!("  Warning: skipped a table row the PDF layout could not fit");
+        }
         is_header = false;
     }
 
@@ -2102,5 +2137,36 @@ mod chapter_tests {
     fn test_empty_heading_does_not_start_a_chapter() {
         let ch = split_chapters("# \n\ntext\n");
         assert_eq!(ch.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod code_wrap_tests {
+    use super::*;
+
+    #[test]
+    fn test_short_line_untouched() {
+        assert_eq!(wrap_code_line("abc", 10), vec!["abc"]);
+    }
+
+    #[test]
+    fn test_exact_length_untouched() {
+        assert_eq!(wrap_code_line("abcde", 5), vec!["abcde"]);
+    }
+
+    #[test]
+    fn test_long_line_wraps_without_loss() {
+        let line = "a".repeat(25);
+        let wrapped = wrap_code_line(&line, 10);
+        assert_eq!(wrapped.len(), 3);
+        assert_eq!(wrapped.concat(), line, "no character may be dropped");
+    }
+
+    #[test]
+    fn test_multibyte_counts_characters_not_bytes() {
+        let line = "\u{65e5}".repeat(12);
+        let wrapped = wrap_code_line(&line, 5);
+        assert_eq!(wrapped.concat(), line);
+        assert!(wrapped.iter().all(|s| s.chars().count() <= 5));
     }
 }
