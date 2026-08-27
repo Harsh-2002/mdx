@@ -204,6 +204,75 @@ fn http_post(url: &str, body: &str) -> (u16, String) {
     (0, String::new())
 }
 
+/// A real 68-byte 1x1 transparent PNG. The bytes are not valid UTF-8, so
+/// a byte-exact round trip proves the server did not mangle them.
+const TINY_PNG: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+    0x89, 0x00, 0x00, 0x00, 0x0B, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0x60, 0x00, 0x02, 0x00,
+    0x00, 0x05, 0x00, 0x01, 0xE9, 0xFA, 0xDC, 0xD8, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
+    0xAE, 0x42, 0x60, 0x82,
+];
+
+/// Returns (status, body_bytes, content_type).
+fn http_get_bytes(url: &str) -> (u16, Vec<u8>, Option<String>) {
+    let agent = http_agent();
+    for attempt in 0..3 {
+        match agent.get(url).call() {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let ct = resp
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| v.to_string());
+                let body = resp.into_body().read_to_vec().unwrap_or_default();
+                return (status, body, ct);
+            }
+            Err(ureq::Error::StatusCode(code)) => return (code, Vec::new(), None),
+            Err(_) if attempt < 2 => {
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            Err(_) => return (0, Vec::new(), None),
+        }
+    }
+    (0, Vec::new(), None)
+}
+
+/// POST a one-part multipart/form-data body, the shape the editor's
+/// drag-and-drop uploader sends.
+fn http_post_multipart_png(url: &str, filename: &str, data: &[u8]) -> (u16, String) {
+    let boundary = "----mdxtestboundary";
+    let mut body: Vec<u8> = Vec::new();
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(
+        format!(
+            "Content-Disposition: form-data; name=\"file\"; filename=\"{}\"\r\n",
+            filename
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(b"Content-Type: image/png\r\n\r\n");
+    body.extend_from_slice(data);
+    body.extend_from_slice(format!("\r\n--{}--\r\n", boundary).as_bytes());
+
+    let agent = http_agent();
+    let content_type = format!("multipart/form-data; boundary={}", boundary);
+    match agent
+        .post(url)
+        .header("content-type", content_type.as_str())
+        .send(&body[..])
+    {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let text = resp.into_body().read_to_string().unwrap_or_default();
+            (status, text)
+        }
+        Err(ureq::Error::StatusCode(code)) => (code, String::new()),
+        Err(_) => (0, String::new()),
+    }
+}
+
 fn write_tmp(name: &str, content: &str) -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
     static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -1166,4 +1235,200 @@ fn test_serve_rejects_invalid_host() {
         "Should explain the bad host, got: {}",
         stderr
     );
+}
+
+// ── Static assets ────────────────────────────────────────────────────
+
+#[test]
+fn test_serve_static_asset_single_file_mode() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join("md-serve-static-single");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    let note = dir.join("note.md");
+    std::fs::write(&note, "# Shot\n\n![](assets/shot.png)\n").unwrap();
+    std::fs::write(dir.join("assets").join("shot.png"), TINY_PNG).unwrap();
+
+    let srv = start_serve(&[note.to_str().unwrap()]);
+
+    let (status, body, ct) = http_get_bytes(&srv.url("/assets/shot.png"));
+    assert_eq!(status, 200, "asset next to the served file should resolve");
+    assert_eq!(
+        ct.as_deref().unwrap_or(""),
+        "image/png",
+        "Content-Type should be image/png, got: {:?}",
+        ct
+    );
+    assert_eq!(body, TINY_PNG, "image bytes should round-trip unchanged");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_serve_static_asset_directory_mode() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join("md-serve-static-dir");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(dir.join("index.md"), "# Dir\n\n![](logo.png)\n").unwrap();
+    std::fs::write(dir.join("logo.png"), TINY_PNG).unwrap();
+    std::fs::write(dir.join("assets").join("photo.jpg"), TINY_PNG).unwrap();
+    std::fs::write(dir.join("secrets.txt"), "TOP-SECRET-MARKER").unwrap();
+
+    let srv = start_serve(&[dir.to_str().unwrap()]);
+
+    // A root-level image also matches the /{file} markdown route, so this
+    // asserts the markdown route falls through to the static handler.
+    let (status, body, ct) = http_get_bytes(&srv.url("/logo.png"));
+    assert_eq!(status, 200, "root-level image should be served");
+    assert_eq!(ct.as_deref().unwrap_or(""), "image/png");
+    assert_eq!(body, TINY_PNG, "image bytes should round-trip unchanged");
+
+    // Nested asset: the path the drag-and-drop uploader produces.
+    let (status, _, ct) = http_get_bytes(&srv.url("/assets/photo.jpg"));
+    assert_eq!(status, 200, "nested asset should be served");
+    assert_eq!(ct.as_deref().unwrap_or(""), "image/jpeg");
+
+    // The markdown route still wins for markdown.
+    let (status, page) = http_get(&srv.url("/index.md"));
+    assert_eq!(status, 200);
+    assert!(
+        page.contains("<!DOCTYPE html>"),
+        "markdown route must not be shadowed by the static handler"
+    );
+
+    // Non-asset files in the served directory are not published.
+    let (status, body, _) = http_get_bytes(&srv.url("/secrets.txt"));
+    assert_ne!(status, 200, "non-asset extensions must not be served");
+    assert!(
+        !String::from_utf8_lossy(&body).contains("TOP-SECRET-MARKER"),
+        "non-asset file content must not leak"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_serve_static_rejects_path_traversal() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = std::env::temp_dir().join("md-serve-static-traversal");
+    let _ = std::fs::remove_dir_all(&root);
+    let served = root.join("served");
+    std::fs::create_dir_all(served.join("assets")).unwrap();
+    std::fs::write(served.join("index.md"), "# Traversal\n").unwrap();
+    // The target lives OUTSIDE the served directory, and uses an
+    // allowlisted extension so only the containment check can stop it.
+    std::fs::write(root.join("secret.png"), "TOP-SECRET-MARKER").unwrap();
+
+    let srv = start_serve(&[served.to_str().unwrap()]);
+
+    // Percent-encoded so no HTTP client normalises the `..` away before
+    // the request reaches the server. The first form is a single raw path
+    // segment, so it is routed through /{file} and must still be refused
+    // after axum percent-decodes it.
+    let attempts = [
+        "/%2e%2e%2fsecret.png",
+        "/assets/%2e%2e%2f%2e%2e%2fsecret.png",
+        "/assets/..%2f..%2fsecret.png",
+        "/%2e%2e%5csecret.png",
+    ];
+    for attempt in attempts {
+        let (status, body, _) = http_get_bytes(&srv.url(attempt));
+        assert_ne!(status, 200, "traversal {} should not succeed", attempt);
+        assert!(
+            !String::from_utf8_lossy(&body).contains("TOP-SECRET-MARKER"),
+            "traversal {} leaked a file outside the served directory",
+            attempt
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_serve_static_rejects_symlink_escape() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = std::env::temp_dir().join("md-serve-static-symlink");
+    let _ = std::fs::remove_dir_all(&root);
+    let served = root.join("served");
+    std::fs::create_dir_all(&served).unwrap();
+    std::fs::write(served.join("index.md"), "# Symlink\n").unwrap();
+    std::fs::write(root.join("outside.png"), "OUTSIDE-MARKER").unwrap();
+    std::os::unix::fs::symlink(root.join("outside.png"), served.join("leak.png")).unwrap();
+
+    let srv = start_serve(&[served.to_str().unwrap()]);
+
+    let (status, body, _) = http_get_bytes(&srv.url("/leak.png"));
+    assert_ne!(
+        status, 200,
+        "a symlink pointing outside the served directory must not be served"
+    );
+    assert!(
+        !String::from_utf8_lossy(&body).contains("OUTSIDE-MARKER"),
+        "symlink escape leaked a file outside the served directory"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn test_serve_upload_then_fetch_round_trip() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join("md-serve-static-upload");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let note = dir.join("note.md");
+    std::fs::write(&note, "# Upload\n").unwrap();
+
+    let srv = start_serve(&[note.to_str().unwrap()]);
+
+    let (status, json) = http_post_multipart_png(&srv.url("/upload"), "shot.png", TINY_PNG);
+    assert_eq!(status, 200, "upload should succeed, got body: {}", json);
+    assert!(
+        json.contains("\"path\":\"assets/"),
+        "upload should return an assets/ path, got: {}",
+        json
+    );
+
+    // Fetch exactly the URL the editor inserts as ![](<path>).
+    let rel = json
+        .split("\"path\":\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .expect("upload response should contain a path")
+        .to_string();
+
+    let (status, body, ct) = http_get_bytes(&srv.url(&format!("/{}", rel)));
+    assert_eq!(status, 200, "uploaded image at /{} should be served", rel);
+    assert_eq!(ct.as_deref().unwrap_or(""), "image/png");
+    assert_eq!(body, TINY_PNG, "served bytes should match the upload");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_serve_upload_rejects_traversal_filename() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = std::env::temp_dir().join("md-serve-static-upload-evil");
+    let _ = std::fs::remove_dir_all(&root);
+    let served = root.join("served");
+    std::fs::create_dir_all(&served).unwrap();
+    let note = served.join("note.md");
+    std::fs::write(&note, "# Upload\n").unwrap();
+
+    let srv = start_serve(&[note.to_str().unwrap()]);
+
+    let (status, json) = http_post_multipart_png(&srv.url("/upload"), "../../evil.png", TINY_PNG);
+    assert_eq!(status, 200, "upload should still succeed, got: {}", json);
+    assert!(
+        !root.join("evil.png").exists() && !served.join("evil.png").exists(),
+        "upload must not write outside the assets directory"
+    );
+    assert!(
+        served.join("assets").join("evil.png").exists(),
+        "upload should be stored under assets/ with the path stripped"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }

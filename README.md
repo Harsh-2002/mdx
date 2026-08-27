@@ -95,7 +95,8 @@ mdx serve file.md --unsafe-html      # render raw HTML in the document
 All modes include:
 - Built-in markdown editor (toggle with pencil icon or `e`)
 - Search & replace in editor (`Ctrl+F` / `Ctrl+H`)
-- Drag & drop image upload (or paste from clipboard)
+- Drag & drop image upload (or paste from clipboard) — uploads land in `assets/` next to the document
+- Local images served from the document's directory, so `![](assets/shot.png)` and `![](diagram.png)` render
 - Print / PDF export button (uses browser's native print)
 - Dark/light theme toggle
 - Table of contents sidebar
@@ -292,7 +293,7 @@ mdx completions powershell           # print PowerShell completions to stdout
 - **Live reload** — `mdx serve` opens a browser preview that updates on file changes
 - **Built-in editor** — toggle a markdown editor in the browser, saves back to disk
 - **Search & replace** — find and replace text in the editor with regex support
-- **Image upload** — drag & drop or paste images into the editor
+- **Image upload** — drag & drop or paste images into the editor; images and other local assets are served from the document's directory
 - **Print / PDF** — browser-native print with clean print-optimized CSS
 - **Directory mode** — `mdx serve ./dir/` shows a file index with card grid
 - **Multi-file mode** — `mdx serve a.md b.md` with sidebar file navigation

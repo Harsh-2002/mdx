@@ -119,6 +119,11 @@ struct AppState {
     stdin_mode: bool,
     file_paths: HashMap<String, PathBuf>,
     dir_path: Option<PathBuf>,
+    /// Directory that static assets are resolved against: images written
+    /// by the drag-and-drop uploader, and anything else the markdown
+    /// references relatively. `None` in stdin mode, where the document
+    /// has no location on disk.
+    base_dir: Option<PathBuf>,
     filenames: RwLock<Vec<String>>,
 }
 
@@ -201,6 +206,7 @@ async fn serve_stdin(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>>
         stdin_mode: true,
         file_paths: HashMap::new(),
         dir_path: None,
+        base_dir: None,
         filenames: RwLock::new(vec![]),
     });
 
@@ -264,6 +270,7 @@ async fn serve_single_file(args: &ServeArgs, file: &str) -> Result<(), Box<dyn s
         stdin_mode: false,
         file_paths,
         dir_path: None,
+        base_dir: file_path.parent().map(|p| p.to_path_buf()),
         filenames: RwLock::new(vec![]),
     });
 
@@ -323,6 +330,7 @@ async fn serve_single_file(args: &ServeArgs, file: &str) -> Result<(), Box<dyn s
         .route("/source", get(get_source_single).put(put_source_single))
         .route("/upload", post(upload_handler))
         .route("/events", get(sse_handler))
+        .fallback(static_fallback)
         .with_state(state);
 
     let addr = SocketAddr::new(bind_ip(&args.host)?, args.port.unwrap_or(0));
@@ -410,6 +418,7 @@ async fn serve_directory(
         stdin_mode: false,
         file_paths,
         dir_path: Some(dir.clone()),
+        base_dir: Some(dir.clone()),
         filenames: RwLock::new(filenames.clone()),
     });
 
@@ -491,6 +500,7 @@ async fn serve_directory(
             "/{file}/source",
             get(get_source_multi).put(put_source_multi),
         )
+        .fallback(static_fallback)
         .with_state(state);
 
     let addr = SocketAddr::new(bind_ip(&args.host)?, args.port.unwrap_or(0));
@@ -570,6 +580,10 @@ async fn serve_multi_files(args: &ServeArgs) -> Result<(), Box<dyn std::error::E
         stdin_mode: false,
         file_paths,
         dir_path: None,
+        base_dir: paths
+            .first()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf()),
         filenames: RwLock::new(filenames.clone()),
     });
 
@@ -655,6 +669,7 @@ async fn serve_multi_files(args: &ServeArgs) -> Result<(), Box<dyn std::error::E
             "/{file}/source",
             get(get_source_multi).put(put_source_multi),
         )
+        .fallback(static_fallback)
         .with_state(state);
 
     let addr = SocketAddr::new(bind_ip(&args.host)?, args.port.unwrap_or(0));
@@ -690,6 +705,175 @@ fn markdown_response(markdown: &str) -> Response {
         .body(axum::body::Body::from(markdown.to_string()))
         .unwrap()
         .into_response()
+}
+
+// --- Static asset serving ---
+
+/// Content-Type for the file extensions `mdx serve` hands out as static
+/// assets. Anything not listed is refused: the server binds 0.0.0.0, so
+/// it must not become a general-purpose file server for whatever
+/// directory it was pointed at.
+///
+/// Covers every image type the drag-and-drop uploader accepts (png,
+/// jpeg, gif, webp, svg) plus the other media a markdown document
+/// normally references.
+fn static_content_type(ext: &str) -> Option<&'static str> {
+    Some(match ext {
+        "png" | "apng" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "avif" => "image/avif",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "tif" | "tiff" => "image/tiff",
+        _ => return None,
+    })
+}
+
+/// Percent-decode a URL path. Returns `None` if the decoded bytes are not
+/// valid UTF-8.
+///
+/// Decoding happens *before* validation (see `resolve_static_path`), so
+/// an encoded `%2e%2e%2f` cannot smuggle a `../` past the component
+/// check the way it would if the checks ran on the raw path.
+fn percent_decode(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Some(hi) = (bytes[i + 1] as char).to_digit(16)
+            && let Some(lo) = (bytes[i + 2] as char).to_digit(16)
+        {
+            out.push((hi * 16 + lo) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Resolve a decoded, relative URL path against `base`, refusing anything
+/// that escapes the base directory.
+///
+/// Defence in depth, in order:
+///  1. Every component must be `Component::Normal`; `..`, a leading `/`
+///     and Windows prefixes such as `C:` are rejected. Each segment is
+///     re-parsed as a path on its own so that a segment like `c:` (and,
+///     on Windows, `..\x`) cannot smuggle a prefix or a parent component
+///     through in one piece.
+///  2. The extension must be one this server publishes.
+///  3. The candidate is canonicalized and must still live under the
+///     canonical base directory. This is what stops a symlink inside the
+///     served directory from pointing somewhere else; `tower_http`'s
+///     `ServeDir` does step 1 but not this one.
+///  4. It must be a regular file, not a directory.
+fn resolve_static_path(base: &std::path::Path, rel: &str) -> Option<PathBuf> {
+    if rel.contains('\0') {
+        return None;
+    }
+
+    let mut candidate = base.to_path_buf();
+    let mut pushed = false;
+    for component in std::path::Path::new(rel).components() {
+        match component {
+            std::path::Component::Normal(seg) => {
+                if !std::path::Path::new(seg)
+                    .components()
+                    .all(|c| matches!(c, std::path::Component::Normal(_)))
+                {
+                    return None;
+                }
+                candidate.push(seg);
+                pushed = true;
+            }
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    if !pushed {
+        return None;
+    }
+
+    let ext = candidate
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    static_content_type(&ext)?;
+
+    // Both sides are canonicalized: on Windows that means both carry the
+    // `\\?\` verbatim prefix, and `starts_with` compares whole path
+    // components, so a sibling directory such as `notes-private` cannot
+    // pass a containment check against `notes`.
+    let canonical_base = std::fs::canonicalize(base).ok()?;
+    let resolved = std::fs::canonicalize(&candidate).ok()?;
+    if !resolved.starts_with(&canonical_base) || !resolved.is_file() {
+        return None;
+    }
+
+    Some(resolved)
+}
+
+fn static_not_found() -> Response {
+    (StatusCode::NOT_FOUND, "Not found").into_response()
+}
+
+/// Serve `rel` (an already percent-decoded relative path) from the
+/// directory this server was pointed at.
+fn static_file_response(base: Option<&std::path::Path>, rel: &str) -> Response {
+    let Some(base) = base else {
+        return static_not_found();
+    };
+    let Some(path) = resolve_static_path(base, rel) else {
+        return static_not_found();
+    };
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    let content_type = static_content_type(&ext).unwrap_or("application/octet-stream");
+
+    match std::fs::read(&path) {
+        Ok(data) => Response::builder()
+            .header(header::CONTENT_TYPE, content_type)
+            .header(header::CACHE_CONTROL, "no-cache")
+            .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+            // SVG is an active document type: navigating directly to a served
+            // .svg runs its scripts in this server's origin, which can PUT
+            // /source. `nosniff` does not stop that. CSP is ignored on
+            // subresources, so `<img>` rendering is unaffected.
+            .header(
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; sandbox",
+            )
+            .body(axum::body::Body::from(data))
+            .unwrap()
+            .into_response(),
+        Err(_) => static_not_found(),
+    }
+}
+
+/// Router fallback: serve a static asset from the document's directory.
+///
+/// Registered with `Router::fallback` rather than as a `/{*path}` route
+/// for two reasons. matchit 0.8 treats `/{*path}` and the existing
+/// `/{file}` route as a conflict, which axum surfaces as a startup panic.
+/// And a fallback runs only after every declared route has failed to
+/// match, so it cannot shadow `/raw`, `/source`, `/upload`, `/events` or
+/// the markdown routes.
+async fn static_fallback(State(state): State<Arc<AppState>>, uri: axum::http::Uri) -> Response {
+    match percent_decode(uri.path().trim_start_matches('/')) {
+        Some(rel) => static_file_response(state.base_dir.as_deref(), &rel),
+        None => static_not_found(),
+    }
 }
 
 // --- Route handlers ---
@@ -729,14 +913,27 @@ async fn serve_page_multi(
     State(state): State<Arc<AppState>>,
     Path(file): Path<String>,
 ) -> Response {
-    let files = state.files.read().unwrap();
-    if let Some(entry) = files.get(&file) {
-        if wants_markdown(&headers) {
-            return markdown_response(&entry.markdown);
-        }
-        Html(entry.full_html.clone()).into_response()
-    } else {
-        Html("Not found".to_string()).into_response()
+    // Resolve and release the lock before any filesystem work below.
+    let rendered = {
+        let files = state.files.read().unwrap();
+        files.get(&file).map(|entry| {
+            if wants_markdown(&headers) {
+                markdown_response(&entry.markdown)
+            } else {
+                Html(entry.full_html.clone()).into_response()
+            }
+        })
+    };
+
+    match rendered {
+        Some(response) => response,
+        // Not a markdown document we know about. It may be an asset
+        // sitting next to the markdown, e.g. a root-level `/logo.png`,
+        // which matches this single-segment route and so never reaches
+        // the router fallback. `file` was already percent-decoded by
+        // axum's Path extractor, so it is validated here, not decoded
+        // a second time.
+        None => static_file_response(state.base_dir.as_deref(), &file),
     }
 }
 
@@ -941,18 +1138,17 @@ async fn upload_handler(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> (StatusCode, String) {
-    // Determine the base directory for assets
-    let base_dir = if let Some(ref dir) = state.dir_path {
-        dir.clone()
-    } else if let Some(path) = state.file_paths.values().next() {
-        path.parent()
-            .unwrap_or(std::path::Path::new("."))
-            .to_path_buf()
-    } else {
-        return (
-            StatusCode::BAD_REQUEST,
-            r#"{"error":"No file context"}"#.to_string(),
-        );
+    // Determine the base directory for assets. This is the same directory
+    // the static-asset handler serves from, so the "assets/<name>" path
+    // returned below is guaranteed to resolve.
+    let base_dir = match state.base_dir {
+        Some(ref dir) => dir.clone(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"No file context"}"#.to_string(),
+            );
+        }
     };
 
     let assets_dir = base_dir.join("assets");
@@ -993,6 +1189,10 @@ async fn upload_handler(
         };
         (format!("image.{}", ext), body.to_vec())
     };
+
+    // The name comes from the client (multipart Content-Disposition), so
+    // strip any directory component before it is joined to assets_dir.
+    let filename = sanitize_upload_filename(&filename);
 
     // Deduplicate filename
     let final_name = dedup_filename(&assets_dir, &filename);
@@ -1083,6 +1283,58 @@ fn find_double_newline(data: &[u8]) -> Option<usize> {
     None
 }
 
+/// Reduce a client-supplied upload name to a single, safe file name.
+/// Any directory component (`/`, `\`, a drive prefix) is discarded, as
+/// are characters that are illegal in Windows file names. An empty or
+/// dot-only result falls back to "upload.png".
+fn sanitize_upload_filename(name: &str) -> String {
+    let name = match name.rfind(['/', '\\']) {
+        Some(idx) => &name[idx + 1..],
+        None => name,
+    };
+    let cleaned: String = name
+        .trim()
+        .trim_matches('.')
+        .chars()
+        .filter(|c| !matches!(c, ':' | '\0' | '<' | '>' | '"' | '|' | '?' | '*'))
+        .collect();
+
+    // Windows reserved device names are matched on the stem, so `CON.png`
+    // opens the console instead of creating a file.
+    let stem = cleaned.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = matches!(
+        stem.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    );
+
+    if cleaned.is_empty() || reserved || cleaned.len() > 200 {
+        "upload.png".to_string()
+    } else {
+        cleaned
+    }
+}
+
 fn dedup_filename(dir: &std::path::Path, filename: &str) -> String {
     if !dir.join(filename).exists() {
         return filename.to_string();
@@ -1129,5 +1381,80 @@ fn load_custom_css(path: Option<&str>) -> String {
             String::new()
         }),
         None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_percent_decode() {
+        assert_eq!(
+            percent_decode("assets/a%20b.png").unwrap(),
+            "assets/a b.png"
+        );
+        assert_eq!(percent_decode("plain.png").unwrap(), "plain.png");
+        assert_eq!(percent_decode("%2e%2e%2fetc").unwrap(), "../etc");
+        assert_eq!(percent_decode("%2E%2E%2Fetc").unwrap(), "../etc");
+        // A stray or truncated '%' is passed through, not swallowed.
+        assert_eq!(percent_decode("100%.png").unwrap(), "100%.png");
+        assert_eq!(percent_decode("trailing%2").unwrap(), "trailing%2");
+        // Invalid UTF-8 is rejected outright.
+        assert!(percent_decode("%ff%fe.png").is_none());
+    }
+
+    #[test]
+    fn test_static_content_type_allowlist() {
+        assert_eq!(static_content_type("png"), Some("image/png"));
+        assert_eq!(static_content_type("jpeg"), Some("image/jpeg"));
+        assert_eq!(static_content_type("svg"), Some("image/svg+xml"));
+        assert_eq!(static_content_type("webp"), Some("image/webp"));
+        assert_eq!(static_content_type("gif"), Some("image/gif"));
+        // Not an asset type: never served.
+        assert_eq!(static_content_type("txt"), None);
+        assert_eq!(static_content_type("env"), None);
+        assert_eq!(static_content_type("md"), None);
+        assert_eq!(static_content_type(""), None);
+    }
+
+    #[test]
+    fn test_resolve_static_path() {
+        let dir = std::env::temp_dir().join("md-unit-static-resolve");
+        let outside = std::env::temp_dir().join("md-unit-static-outside.png");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("assets").join("ok.png"), b"x").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"x").unwrap();
+        std::fs::write(&outside, b"x").unwrap();
+
+        // Allowed.
+        assert!(resolve_static_path(&dir, "assets/ok.png").is_some());
+        assert!(resolve_static_path(&dir, "./assets/ok.png").is_some());
+
+        // Escapes the base directory.
+        assert!(resolve_static_path(&dir, "../md-unit-static-outside.png").is_none());
+        assert!(resolve_static_path(&dir, "assets/../../md-unit-static-outside.png").is_none());
+        assert!(resolve_static_path(&dir, "/etc/passwd").is_none());
+
+        // Not an asset, not a file, not a path.
+        assert!(resolve_static_path(&dir, "notes.txt").is_none());
+        assert!(resolve_static_path(&dir, "assets").is_none());
+        assert!(resolve_static_path(&dir, "").is_none());
+        assert!(resolve_static_path(&dir, "missing.png").is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn test_sanitize_upload_filename() {
+        assert_eq!(sanitize_upload_filename("shot.png"), "shot.png");
+        assert_eq!(sanitize_upload_filename("../../evil.png"), "evil.png");
+        assert_eq!(sanitize_upload_filename("..\\..\\evil.png"), "evil.png");
+        assert_eq!(sanitize_upload_filename("/etc/cron.d/evil.png"), "evil.png");
+        assert_eq!(sanitize_upload_filename("a:b.png"), "ab.png");
+        assert_eq!(sanitize_upload_filename(".."), "upload.png");
+        assert_eq!(sanitize_upload_filename(""), "upload.png");
     }
 }
