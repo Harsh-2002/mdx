@@ -913,3 +913,36 @@ fn test_serve_multi_content_negotiation() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn test_serve_put_source_rejects_traversal() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = std::env::temp_dir().join("md-serve-put-traversal");
+    let _ = std::fs::remove_dir_all(&root);
+    let served = root.join("served");
+    std::fs::create_dir_all(&served).unwrap();
+    std::fs::write(served.join("index.md"), "# Put\n").unwrap();
+
+    let srv = start_serve(&[served.to_str().unwrap()]);
+
+    // Percent-encoded and raw forms both decode to a traversal before the
+    // handler sees them.
+    for probe in ["/%2e%2e%2fescaped.md/source", "/..%2fescaped.md/source"] {
+        let agent = http_agent();
+        let _ = agent.put(&srv.url(probe)).send("PWNED");
+    }
+
+    assert!(
+        !root.join("escaped.md").exists(),
+        "PUT /{{file}}/source must not write outside the served directory"
+    );
+    // The legitimate path must still work.
+    let code = http_put(&srv.url("/index.md/source"), "# Edited\n");
+    assert_eq!(code, 200, "normal source write must still succeed");
+    assert_eq!(
+        std::fs::read_to_string(served.join("index.md")).unwrap(),
+        "# Edited\n"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}

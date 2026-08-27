@@ -763,12 +763,19 @@ async fn put_source_multi(
     Path(file): Path<String>,
     body: String,
 ) -> StatusCode {
-    let path = match state
-        .file_paths
-        .get(&file)
-        .cloned()
-        .or_else(|| state.dir_path.as_ref().map(|d| d.join(&file)))
-    {
+    // An unknown name in directory mode is joined to the served directory, so
+    // it must be a plain file name. `create_file` already guards this shape;
+    // this endpoint did not, which made PUT /%2e%2e%2f%2e%2e%2f.bashrc/source
+    // an unauthenticated arbitrary file write -- reachable from the network,
+    // since the server binds 0.0.0.0.
+    let in_served_dir = || {
+        if file.contains('/') || file.contains('\\') || file.contains("..") {
+            return None;
+        }
+        state.dir_path.as_ref().map(|d| d.join(&file))
+    };
+
+    let path = match state.file_paths.get(&file).cloned().or_else(in_served_dir) {
         Some(p) => p,
         None => return StatusCode::NOT_FOUND,
     };
