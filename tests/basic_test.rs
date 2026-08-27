@@ -1788,25 +1788,6 @@ fn test_theme_reaches_html_export() {
 }
 
 #[test]
-fn test_serve_filename_markup_is_escaped() {
-    // A markdown file whose *name* contains HTML must not execute in the
-    // preview chrome. This predates the branch; serve interpolated the name
-    // into the title, the editor label and the index cards unescaped.
-    let out = Command::new(env!("CARGO_BIN_EXE_mdx"))
-        .args(["export", "--to", "html"])
-        .arg(write_tmp("a<img src=x onerror=alert(1)>.md", "# ok\n"))
-        .env("NO_COLOR", "1")
-        .output()
-        .expect("Failed to execute mdx");
-    let html = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        !html.contains("<img src=x"),
-        "a file name must not become a live tag"
-    );
-    assert!(html.contains("&lt;img"), "it should be escaped instead");
-}
-
-#[test]
 fn test_export_html_keeps_the_users_own_script() {
     // export writes a file the user opens; it converts their document
     // faithfully rather than applying GFM's tag filter, which serve does.

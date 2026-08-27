@@ -326,3 +326,44 @@ fn theme_strings(theme: &ThemeName) -> &'static str {
         ThemeName::Light => "light",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_html_escape_neutralises_markup() {
+        assert_eq!(html_escape("a<b>&\"c"), "a&lt;b&gt;&amp;&quot;c");
+    }
+
+    #[test]
+    fn test_page_templates_escape_the_title() {
+        // A file name reaches the <title>, the editor label and the sidebar.
+        // Unescaped, a file called `a<img src=x onerror=alert(1)>.md` ran on
+        // open. Tested here rather than through a real file: those characters
+        // are illegal in a Windows filename.
+        let evil = "a<img src=x onerror=alert(1)>.md";
+        for page in [
+            render_page("# ok", "base16-ocean.dark", &ThemeName::Dark, evil, ""),
+            render_standalone("# ok", "base16-ocean.dark", &ThemeName::Dark, evil, ""),
+        ] {
+            assert!(
+                !page.contains("<img src=x"),
+                "a file name must not become a live tag"
+            );
+            assert!(page.contains("&lt;img"), "it should be escaped instead");
+        }
+    }
+
+    #[test]
+    fn test_index_cards_escape_names_and_hrefs() {
+        let files = vec!["a<img src=x>.md".to_string()];
+        let page = render_index_page(&files, &ThemeName::Dark, true);
+        assert!(!page.contains("<img src=x"), "card name must be escaped");
+        assert!(page.contains("&lt;img"), "escaped form expected");
+        assert!(
+            !page.contains(r#"href="/a<img"#),
+            "href must be percent-encoded"
+        );
+    }
+}
