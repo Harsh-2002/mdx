@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Install mdx — a terminal markdown renderer.
+    Install mdx — Fast terminal markdown renderer and toolchain.
 .DESCRIPTION
     Downloads the latest mdx release from GitHub, installs the binary,
     adds it to PATH, and sets up PowerShell tab completions.

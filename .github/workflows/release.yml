@@ -1,12 +1,32 @@
 name: Release
 
+# Manual only. Tests run in CI on every push and pull request; this workflow
+# exists to publish, not to verify.
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the leading v (e.g. 1.2.0)"
+        required: true
+        type: string
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version input must match Cargo.toml
+        run: |
+          manifest=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [ "$manifest" != "${{ inputs.version }}" ]; then
+            echo "Cargo.toml is $manifest but you asked to release ${{ inputs.version }}." >&2
+            echo "Bump the manifest first, or release $manifest." >&2
+            exit 1
+          fi
+          echo "Releasing v$manifest"
+
   build:
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -92,5 +112,7 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ inputs.version }}
+          name: v${{ inputs.version }}
           files: mdx-*.tar.gz
           generate_release_notes: true
