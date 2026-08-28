@@ -150,7 +150,9 @@ pub fn render_page_multi(
         } else {
             ""
         };
-        file_links.push_str(&format!(r#"<a href="/{file}"{active}>{file}</a>"#));
+        let name = html_escape(file);
+        let href = url_escape(file);
+        file_links.push_str(&format!(r#"<a href="/{href}"{active}>{name}</a>"#));
     }
 
     format!(
@@ -353,6 +355,28 @@ mod tests {
             );
             assert!(page.contains("&lt;img"), "it should be escaped instead");
         }
+    }
+
+    #[test]
+    fn test_multi_file_sidebar_escapes_names() {
+        // The sidebar in render_page_multi was missed by the first escaping
+        // pass: the index page was safe while every document page was not.
+        let evil = "a<img src=x onerror=alert(1)>.md";
+        let files = vec![evil.to_string(), "b.md".to_string()];
+        let page = render_page_multi(
+            "# ok",
+            "base16-ocean.dark",
+            &ThemeName::Dark,
+            "b.md",
+            &files,
+            "b.md",
+            "",
+        );
+        assert!(
+            !page.contains("<img src=x"),
+            "a sidebar entry must not become a live tag"
+        );
+        assert!(page.contains("&lt;img"), "it should be escaped instead");
     }
 
     #[test]

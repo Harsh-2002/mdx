@@ -288,6 +288,26 @@ const MATRIX: &[Row] = &[
         txt: Full,
         json: Full,
     },
+    Row {
+        fixture: "superscript_prose",
+        // Two carets in ordinary prose parse as a Superscript node; txt and
+        // PDF used to drop the delimiters, turning 2^10 into 210.
+        probes: &[&["2^10 vs 2^20"]],
+        term: Full,
+        html: OkWith(&[&["<sup>"]]),
+        txt: Full,
+        // json emits the structure, not a flat string.
+        json: OkWith(&[&["\"superscript\""], &["10 vs 2"]]),
+    },
+    Row {
+        fixture: "autolink_prose",
+        // The label of an autolink already is the URL; txt must not repeat it.
+        probes: &[&["example.com/autodup"]],
+        term: Full,
+        html: Full,
+        txt: OkWith(&[&["https://example.com/autodup for details"]]),
+        json: Full,
+    },
 ];
 
 fn fixture_path(name: &str) -> std::path::PathBuf {
