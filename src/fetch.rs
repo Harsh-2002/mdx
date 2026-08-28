@@ -62,9 +62,13 @@ pub fn run(args: &FetchArgs) -> Result<String, Box<dyn std::error::Error>> {
             eprintln!("  Server provided markdown directly");
             let token_count = server_tokens.unwrap_or_else(|| crate::estimate_tokens(&body));
             let meta = article_meta_from_front_matter(&body);
-            // Strip it, or --metadata emits a second block and comrak reads the
-            // first one only.
-            let body = crate::frontmatter::strip(&body).to_string();
+            // Only strip when we are about to prepend our own block; otherwise
+            // the document keeps whatever front matter the server sent.
+            let body = if args.metadata {
+                crate::frontmatter::strip(&body).to_string()
+            } else {
+                body
+            };
             (body, meta, token_count)
         }
         FetchResult::Html { body, .. } => {
