@@ -1897,21 +1897,7 @@ fn ast_to_json<'a>(node: &'a AstNode<'a>, depth: usize) -> String {
 }
 
 fn json_escape(s: &str) -> String {
-    let mut result = String::with_capacity(s.len() + 2);
-    result.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => result.push_str("\\\""),
-            '\\' => result.push_str("\\\\"),
-            '\n' => result.push_str("\\n"),
-            '\r' => result.push_str("\\r"),
-            '\t' => result.push_str("\\t"),
-            c if c < '\x20' => result.push_str(&format!("\\u{:04x}", c as u32)),
-            c => result.push(c),
-        }
-    }
-    result.push('"');
-    result
+    crate::json::quote(s)
 }
 
 fn extract_plain_text<'a>(root: &'a AstNode<'a>) -> String {

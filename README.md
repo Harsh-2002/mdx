@@ -94,8 +94,19 @@ Downloads a page, extracts the main content with readability, and renders clean 
 | `--metadata` | Prepend YAML front matter (title, author, date, source) |
 | `--tokens` | Print an estimated token count to stderr |
 | `-p, --pager` | Page the rendered output |
+| `--json` | Emit a JSON object instead of markdown |
+| `--max-tokens <N>` | Truncate to roughly N tokens, at a block boundary |
 
 `mdx <url>` runs the same pipeline but always renders for the terminal.
+
+`--json` carries the requested and final URLs, HTTP status, content type, how the content was extracted (`server-markdown`, `readability` or `raw`), byte count, elapsed time, token estimate, metadata, any warnings, and the markdown itself — so a pipeline can tell a clean extraction from a fallback without parsing stderr.
+
+```bash
+mdx fetch --json https://example.com | jq -r .content
+mdx fetch --json --max-tokens 4000 URL | jq '{tokens, truncated, warnings}'
+```
+
+`--max-tokens` cuts at the last block boundary under the budget, never inside a fenced code block, and appends `*[truncated]*`. Token counts are a `chars/4` estimate, not a tokenizer.
 
 ## `mdx export`
 

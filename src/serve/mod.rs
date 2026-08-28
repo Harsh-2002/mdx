@@ -564,7 +564,10 @@ async fn serve_directory(
                             markdown: content,
                         },
                     );
-                    let _ = state.tx.send(format!(r#"{{"file":"{}"}}"#, changed_file));
+                    let _ = state.tx.send(format!(
+                        r#"{{"file":{}}}"#,
+                        crate::json::quote(&changed_file)
+                    ));
                 }
             }
         });
@@ -735,7 +738,10 @@ async fn serve_multi_files(args: &ServeArgs) -> Result<(), Box<dyn std::error::E
                             markdown: content,
                         },
                     );
-                    let _ = state.tx.send(format!(r#"{{"file":"{}"}}"#, changed_file));
+                    let _ = state.tx.send(format!(
+                        r#"{{"file":{}}}"#,
+                        crate::json::quote(&changed_file)
+                    ));
                 }
             }
         });
@@ -1255,7 +1261,10 @@ async fn upload_handler(
     if let Err(e) = std::fs::create_dir_all(&assets_dir) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!(r#"{{"error":"Failed to create assets dir: {}"}}"#, e),
+            format!(
+                r#"{{"error":{}}}"#,
+                crate::json::quote(&format!("Failed to create assets dir: {}", e))
+            ),
         );
     }
 
@@ -1301,12 +1310,18 @@ async fn upload_handler(
     if let Err(e) = std::fs::write(&file_path, &file_data) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!(r#"{{"error":"Failed to write file: {}"}}"#, e),
+            format!(
+                r#"{{"error":{}}}"#,
+                crate::json::quote(&format!("Failed to write file: {}", e))
+            ),
         );
     }
 
     let path = format!("assets/{}", final_name);
-    (StatusCode::OK, format!(r#"{{"path":"{}"}}"#, path))
+    (
+        StatusCode::OK,
+        format!(r#"{{"path":{}}}"#, crate::json::quote(&path)),
+    )
 }
 
 fn parse_multipart(body: &[u8], content_type: &str) -> Option<(String, Vec<u8>)> {
