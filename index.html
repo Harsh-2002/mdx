@@ -482,10 +482,11 @@ mdx https://example.com/doc.md         <span style="color:var(--fg-muted)"># ren
 <ul class="features">
     <li><strong>Syntax highlighting</strong> &mdash; language-aware code blocks via syntect</li>
     <li><strong>Tables</strong> &mdash; full GFM table rendering with alignment and cell wrapping</li>
+    <li><strong>Docs extensions</strong> &mdash; description lists, <code>==highlight==</code>, <code>^superscript^</code>, <code>[[wikilinks]]</code> and inline footnotes, on top of GFM &mdash; each rendering in every output target</li>
     <li><strong>Mermaid diagrams</strong> &mdash; rendered as interactive SVG in browser preview (<code>mdx serve</code>) via mermaid.js</li>
-    <li><strong>Math</strong> &mdash; inline <code>$...$</code> and display <code>$$...$$</code> via KaTeX in browser preview (<code>mdx serve</code>)</li>
+    <li><strong>Math</strong> &mdash; inline <code>$...$</code> and display <code>$$...$$</code>; KaTeX in browser preview, Unicode in the terminal (<code>\frac{a}{b}</code> renders as <code>a/b</code>)</li>
     <li><strong>Images</strong> &mdash; inline image rendering in supported terminals (iTerm2, kitty)</li>
-    <li><strong>URL fetching</strong> &mdash; render markdown directly from URLs</li>
+    <li><strong>URL fetching</strong> &mdash; <code>mdx &lt;url&gt;</code> and <code>mdx fetch &lt;url&gt;</code> share one pipeline: markdown URLs render as markdown, web pages have their article extracted</li>
     <li><strong>Web page extraction</strong> &mdash; <code>mdx fetch</code> extracts article content as clean markdown, with MFA content negotiation</li>
     <li><strong>Markdown for Agents</strong> &mdash; <code>mdx serve</code> responds with raw markdown when AI agents send <code>Accept: text/markdown</code></li>
     <li><strong>Live reload</strong> &mdash; <code>mdx serve</code> opens a browser preview that updates on save</li>
@@ -575,8 +576,8 @@ mdx search -l "query" .              <span style="color:var(--fg-muted)"># list 
 
 <div class="tool-card">
     <h3><code>mdx export</code> &mdash; Format conversion</h3>
-    <p>Export markdown to standalone HTML, PDF, EPUB, JSON AST, or plain text. EPUB embeds local images and maps front matter to metadata.</p>
-<pre><span class="code-lang">bash</span><code>mdx export --to html README.md   <span style="color:var(--fg-muted)"># standalone HTML page</span>
+    <p>Export markdown to a single-file HTML page, PDF, EPUB, JSON AST, or plain text. EPUB embeds local images, splits chapters on headings, and maps front matter to metadata. HTML is one file, but math and mermaid load KaTeX and mermaid.js from a CDN, so those two need a network connection to display. PDF renders mermaid with a local <code>mmdc</code>; without it the diagram is written in as a labelled source block and the export still succeeds &mdash; <code>--allow-remote-render</code> uploads the source to kroki.io instead, so it is off by default.</p>
+<pre><span class="code-lang">bash</span><code>mdx export --to html README.md   <span style="color:var(--fg-muted)"># single-file HTML page</span>
 mdx export --to pdf README.md    <span style="color:var(--fg-muted)"># PDF (native, no browser needed)</span>
 mdx export --to epub README.md   <span style="color:var(--fg-muted)"># EPUB e-book</span>
 mdx export --to json README.md   <span style="color:var(--fg-muted)"># AST as JSON (for tooling)</span>
@@ -626,9 +627,25 @@ mdx completions powershell           <span style="color:var(--fg-muted)"># print
 
 <p><strong>Directory</strong> &mdash; <code>mdx serve ./notes/</code> shows all <code>.md</code> files as a card grid. Click any card to view it, or click "+" to create a new note.</p>
 
-<p><strong>Multiple files</strong> &mdash; <code>mdx serve a.md b.md c.md</code> serves the listed files with sidebar navigation and search.</p>
+<p><strong>Multiple files</strong> &mdash; <code>mdx serve a.md b.md c.md
+mdx serve file.md --host 0.0.0.0  <span style="color:var(--fg-muted)"># expose on your LAN</span>
+mdx serve file.md --unsafe-html  <span style="color:var(--fg-muted)"># render raw HTML in the document</span></code> serves the listed files with sidebar navigation and search.</p>
 
-<p>All modes include a built-in editor, image upload (drag and drop or paste), print/PDF export, dark/light theme, and a table of contents sidebar. AI agents sending <code>Accept: text/markdown</code> get raw markdown with <code>X-Markdown-Tokens</code> and <code>Vary: Accept</code> headers instead of HTML (<a href="https://developers.cloudflare.com/fundamentals/reference/markdown-for-agents/">Markdown for Agents</a> protocol).</p>
+<p>All modes include a built-in editor, image upload (drag and drop or paste), print/PDF export, dark/light theme, and a table of contents sidebar. AI agents sending <code>Accept: text/markdown</code> get raw markdown with <code>X-Markdown-Tokens</code> and <code>Vary: Accept</code> headers instead of HTML (<a href="https://developers.cloudflare.com/fundamentals/reference/markdown-for-agents/">Markdown for Agents</a> protocol).
+
+<p>Local images are served from the document's directory, so <code>![](assets/shot.png)</code> renders &mdash; including files the drag-and-drop uploader writes.</p>
+
+<h3>Security defaults</h3>
+
+<p>The server is unauthenticated: anyone who can reach the port can read your files, overwrite them, create new ones and upload into <code>assets/</code>. So it is locked down by default.</p>
+
+<ul class="features">
+    <li><strong>Binds <code>127.0.0.1</code></strong> &mdash; reachable only from this machine. <code>--host 0.0.0.0</code> exposes it to your network.</li>
+    <li><strong>Answers only on an address</strong> &mdash; <code>127.0.0.1</code>, <code>::1</code>, <code>localhost</code> or a LAN IP, never a domain name. Binding loopback alone does not stop a web page pointing a domain at <code>127.0.0.1</code> and reaching the server through your browser; requiring an address in the <code>Host</code> header does. Writes carrying a cross-origin <code>Origin</code> are refused.</li>
+    <li><strong>Raw HTML is dropped</strong> &mdash; a <code>&lt;script&gt;</code> in a downloaded or agent-written document cannot run. <code>--unsafe-html</code> renders it the way GitHub does: <code>&lt;div&gt;</code> and <code>&lt;details&gt;</code> pass, <code>&lt;script&gt;</code> and <code>&lt;iframe&gt;</code> stay neutralised.</li>
+</ul>
+
+<p><code>mdx export</code> is different: it writes a file you open yourself, so it converts your document faithfully, tags and all.</p></p>
 
 <table class="key-table">
     <thead>
