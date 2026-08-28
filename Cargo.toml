@@ -3,11 +3,11 @@ name = "mdx"
 version = "1.2.0"
 edition = "2024"
 rust-version = "1.88"
-description = "A terminal markdown renderer with colors, formatting, and diagram support"
+description = "A fast terminal markdown renderer and toolchain: render, serve, convert, lint and fetch markdown"
 license = "MIT"
 repository = "https://github.com/Harsh-2002/mdx"
 homepage = "https://github.com/Harsh-2002/mdx"
-keywords = ["markdown", "terminal", "cli", "renderer"]
+keywords = ["markdown", "terminal", "cli", "renderer", "commonmark"]
 categories = ["command-line-utilities", "text-processing"]
 
 [lib]
