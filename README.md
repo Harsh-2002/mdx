@@ -112,6 +112,7 @@ All modes include:
 **Security defaults**
 
 - Binds `127.0.0.1` — the preview is reachable only from this machine. `--host 0.0.0.0` exposes it to your network, and the server is unauthenticated: anyone who can reach the port can read your files, overwrite them, create new ones and upload into `./assets`.
+- Answers only on an address (`127.0.0.1`, `::1`, `localhost`, or your LAN IP), never a domain name. Binding loopback alone does not stop a web page pointing a domain at `127.0.0.1` and reaching the server through your browser; requiring an address in the `Host` header does. Writes carrying a cross-origin `Origin` are refused, which `POST /create` and `POST /upload` need because a browser sends those cross-origin without a preflight.
 - Raw HTML inside markdown is dropped, so a `<script>` in a downloaded or agent-written document cannot run in your browser. `--unsafe-html` renders it the way GitHub does — `<div>`, `<details>` and badge tables pass, while GFM's tagfilter still neutralises `<script>`, `<iframe>` and friends. `mdx export` is different: it writes a file you open yourself, so it converts your document faithfully, tags and all. This affects READMEs: `<details>` collapsibles and `<div align="center">` logo/badge blocks are dropped whole — tags *and* the content between them — because an HTML block runs to the next blank line. Markdown images, tables, code fences, math, mermaid and GFM alerts are unaffected.
 
 | Key | Action |
