@@ -120,6 +120,71 @@ fn print_serve_banner(addr: SocketAddr, source: &str) {
     eprintln!("  Press Ctrl+C to stop");
 }
 
+/// Reject requests whose `Host` is a DNS name rather than an address.
+///
+/// Binding loopback does not stop DNS rebinding: an attacker page on a name
+/// that resolves to 127.0.0.1 reaches this server, and the browser treats it as
+/// same-origin, so the unauthenticated write endpoints are in reach. A browser
+/// always sends the name it was given, so requiring an IP literal or localhost
+/// breaks the attack while leaving every normal way of reaching the preview
+/// working.
+///
+/// Also refuses a cross-origin `Origin` on mutating methods. `PUT` is already
+/// covered by CORS preflight, but `POST /create` and `POST /upload` are
+/// CORS-simple: a browser sends them cross-origin and the side effect lands
+/// even though the response is unreadable.
+fn host_is_addressable(host: &str) -> bool {
+    let host = host.split(',').next().unwrap_or(host).trim();
+    let name = match host.rfind(':') {
+        // Bare IPv6 has many colons; a bracketed one ends with ']' before the port.
+        Some(i) if !host.starts_with('[') && host[..i].contains(':') => host,
+        Some(i) if host[i + 1..].chars().all(|c| c.is_ascii_digit()) => &host[..i],
+        _ => host,
+    };
+    let name = name
+        .strip_prefix('[')
+        .and_then(|n| n.strip_suffix(']'))
+        .unwrap_or(name);
+    name.eq_ignore_ascii_case("localhost") || name.parse::<IpAddr>().is_ok()
+}
+
+async fn guard_host(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let headers = request.headers();
+    let host = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !host.is_empty() && !host_is_addressable(host) {
+        return (
+            StatusCode::FORBIDDEN,
+            format!(
+                "Refusing request for host '{}'. mdx serve answers on an address \
+                 (127.0.0.1, ::1 or your LAN IP), not a name -- this is what stops a \
+                 web page from reaching your files by pointing a domain at localhost.\n",
+                host
+            ),
+        )
+            .into_response();
+    }
+
+    let mutating = matches!(
+        *request.method(),
+        axum::http::Method::POST | axum::http::Method::PUT | axum::http::Method::DELETE
+    );
+    if mutating && let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        let same = origin
+            .split("//")
+            .nth(1)
+            .is_some_and(|authority| authority == host);
+        if !same {
+            return (StatusCode::FORBIDDEN, "Refusing a cross-origin write.\n").into_response();
+        }
+    }
+
+    next.run(request).await
+}
+
 struct AppState {
     /// Single-file mode: one entry with key ""
     /// Multi-file mode: entries keyed by filename
@@ -227,6 +292,7 @@ async fn serve_stdin(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>>
     let app = Router::new()
         .route("/", get(serve_page_single))
         .route("/raw", get(serve_raw_single))
+        .layer(axum::middleware::from_fn(guard_host))
         .with_state(state);
 
     let addr = SocketAddr::new(bind_ip(&args.host)?, args.port.unwrap_or(0));
@@ -345,6 +411,7 @@ async fn serve_single_file(args: &ServeArgs, file: &str) -> Result<(), Box<dyn s
         .route("/upload", post(upload_handler))
         .route("/events", get(sse_handler))
         .fallback(static_fallback)
+        .layer(axum::middleware::from_fn(guard_host))
         .with_state(state);
 
     let addr = SocketAddr::new(bind_ip(&args.host)?, args.port.unwrap_or(0));
@@ -515,6 +582,7 @@ async fn serve_directory(
             get(get_source_multi).put(put_source_multi),
         )
         .fallback(static_fallback)
+        .layer(axum::middleware::from_fn(guard_host))
         .with_state(state);
 
     let addr = SocketAddr::new(bind_ip(&args.host)?, args.port.unwrap_or(0));
@@ -684,6 +752,7 @@ async fn serve_multi_files(args: &ServeArgs) -> Result<(), Box<dyn std::error::E
             get(get_source_multi).put(put_source_multi),
         )
         .fallback(static_fallback)
+        .layer(axum::middleware::from_fn(guard_host))
         .with_state(state);
 
     let addr = SocketAddr::new(bind_ip(&args.host)?, args.port.unwrap_or(0));
@@ -1536,5 +1605,46 @@ mod host_tests {
         assert!(bind_ip("example.com").is_err());
         assert!(bind_ip("").is_err());
         assert!(bind_ip("[not-an-ip]").is_err());
+    }
+}
+
+#[cfg(test)]
+mod host_guard_tests {
+    use super::*;
+
+    #[test]
+    fn test_addresses_are_accepted() {
+        for h in [
+            "127.0.0.1:8080",
+            "127.0.0.1",
+            "localhost:3000",
+            "LocalHost",
+            "[::1]:8080",
+            "::1",
+            "10.1.1.10:8080",
+            "192.168.0.5",
+        ] {
+            assert!(host_is_addressable(h), "{:?} should be accepted", h);
+        }
+    }
+
+    #[test]
+    fn test_dns_names_are_rejected() {
+        for h in [
+            "evil.com",
+            "evil.com:8080",
+            "attacker.example",
+            "localhost.evil.com",
+            "127.0.0.1.evil.com",
+            "sub.domain.test:1234",
+        ] {
+            assert!(!host_is_addressable(h), "{:?} should be rejected", h);
+        }
+    }
+
+    #[test]
+    fn test_multiple_host_headers_use_the_first() {
+        assert!(host_is_addressable("127.0.0.1:8080, evil.com"));
+        assert!(!host_is_addressable("evil.com, 127.0.0.1:8080"));
     }
 }

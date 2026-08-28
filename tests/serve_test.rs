@@ -1443,3 +1443,66 @@ fn test_serve_upload_rejects_traversal_filename() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn test_serve_rejects_dns_rebinding_host() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = write_tmp("md-rebind.md", "# Rebind");
+    let srv = start_serve(&[tmp.to_str().unwrap()]);
+
+    let agent = http_agent();
+    // Binding loopback does not stop a name that resolves to 127.0.0.1; the
+    // browser sends the name it was given, so the Host header is the tell.
+    let status = match agent
+        .get(&srv.url("/"))
+        .header("Host", "evil.example")
+        .call()
+    {
+        Ok(r) => r.status().as_u16(),
+        Err(ureq::Error::StatusCode(c)) => c,
+        Err(_) => 0,
+    };
+    assert_eq!(status, 403, "a DNS name in Host must be refused");
+
+    // The normal path is unaffected.
+    let (status, _) = http_get(&srv.url("/"));
+    assert_eq!(status, 200);
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_serve_rejects_cross_origin_write() {
+    let _guard = SERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = std::env::temp_dir().join("md-serve-xorigin");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.md"), "# Original\n").unwrap();
+
+    let srv = start_serve(&[root.to_str().unwrap()]);
+    let agent = http_agent();
+
+    // POST with a simple content type is a CORS-simple request: the browser
+    // sends it cross-origin and the side effect lands even though the response
+    // cannot be read.
+    let status = match agent
+        .post(&srv.url("/create"))
+        .header("Origin", "https://evil.example")
+        .send("pwned.md")
+    {
+        Ok(r) => r.status().as_u16(),
+        Err(ureq::Error::StatusCode(c)) => c,
+        Err(_) => 0,
+    };
+    assert_eq!(status, 403, "cross-origin create must be refused");
+    assert!(
+        !root.join("pwned.md").exists(),
+        "cross-origin create must not reach the disk"
+    );
+
+    // Same-origin still works.
+    let code = http_put(&srv.url("/a.md/source"), "# Edited\n");
+    assert_eq!(code, 200, "same-origin write must still succeed");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
