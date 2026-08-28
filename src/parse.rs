@@ -42,6 +42,9 @@ pub fn inline_text<'a>(node: &'a AstNode<'a>, code: CodeStyle) -> String {
                 }
                 CodeStyle::Bare => out.push_str(&c.literal),
             },
+            // comrak's own collect_text_append includes math when it
+            // anchorises, so toc must too or its links will not resolve.
+            NodeValue::Math(m) => out.push_str(&m.literal),
             NodeValue::SoftBreak | NodeValue::LineBreak => out.push(' '),
             _ => {}
         }

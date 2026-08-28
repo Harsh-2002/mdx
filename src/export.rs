@@ -1928,14 +1928,30 @@ fn extract_plain_text<'a>(root: &'a AstNode<'a>) -> String {
                 match &n.data.borrow().value {
                     // A link's target is only useful after its label.
                     NodeValue::Link(link) if !link.url.is_empty() => {
-                        text.push_str(" (");
-                        text.push_str(&link.url);
-                        text.push(')');
+                        // An autolink's label already is the URL.
+                        let label_is_url = text.ends_with(link.url.as_str())
+                            || link
+                                .url
+                                .strip_prefix("mailto:")
+                                .is_some_and(|a| text.ends_with(a));
+                        if !label_is_url {
+                            text.push_str(" (");
+                            text.push_str(&link.url);
+                            text.push(')');
+                        }
                         last_was_block = false;
                     }
                     NodeValue::TableRow(_) => {
                         text.push('\n');
                         last_was_block = true;
+                    }
+                    NodeValue::Superscript => {
+                        text.push('^');
+                        last_was_block = false;
+                    }
+                    NodeValue::Highlight => {
+                        text.push_str("==");
+                        last_was_block = false;
                     }
                     NodeValue::WikiLink(link) if !link.url.is_empty() => {
                         text.push_str(" (");
@@ -1976,6 +1992,14 @@ fn extract_plain_text<'a>(root: &'a AstNode<'a>) -> String {
                     text.push_str(" | ");
                 }
                 first_cell_in_row = false;
+                last_was_block = false;
+            }
+            NodeValue::Superscript => {
+                text.push('^');
+                last_was_block = false;
+            }
+            NodeValue::Highlight => {
+                text.push_str("==");
                 last_was_block = false;
             }
             NodeValue::Math(m) => {
