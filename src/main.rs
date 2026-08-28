@@ -133,6 +133,11 @@ fn main() {
         if fetch_args.output.is_some() {
             return;
         }
+        // JSON is a payload, never terminal-rendered markdown.
+        if fetch_args.json {
+            println!("{}", markdown.trim_end());
+            return;
+        }
         // If stdout is not a terminal (piped), output raw markdown
         if !std::io::stdout().is_terminal() {
             let stdout = io::stdout();
@@ -284,6 +289,8 @@ fn main() {
                     metadata: false,
                     tokens: false,
                     pager: false,
+                    json: false,
+                    max_tokens: None,
                 };
                 md::fetch::run(&fa).unwrap_or_else(|e| {
                     eprintln!("Error: {}", e);

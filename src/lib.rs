@@ -7,6 +7,7 @@ pub mod fetch;
 pub mod fmt;
 pub mod frontmatter;
 pub mod html;
+pub mod json;
 pub mod lint;
 pub mod options;
 pub mod parse;

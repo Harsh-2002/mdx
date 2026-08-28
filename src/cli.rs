@@ -344,6 +344,22 @@ pub struct FetchArgs {
     /// Pipe output through less -R (same as the top-level -p)
     #[arg(short = 'p', long)]
     pub pager: bool,
+
+    /// Emit a JSON object instead of markdown
+    ///
+    /// Carries the requested and final URLs, HTTP status, content type, how the
+    /// content was extracted, timings, metadata, any warnings, and the markdown
+    /// itself. Implies no terminal rendering.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Truncate the output to roughly this many tokens
+    ///
+    /// Cuts at a block boundary under the budget rather than mid-sentence, and
+    /// never inside a fenced code block. The result reports whether it was
+    /// truncated.
+    #[arg(long, value_name = "N")]
+    pub max_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]

@@ -21,6 +21,14 @@ enum FetchResult {
     },
 }
 
+/// Transport facts about the response, for --json and future --debug.
+struct FetchInfo {
+    status: u16,
+    content_type: String,
+    bytes: usize,
+    elapsed_ms: u128,
+}
+
 fn http_agent() -> ureq::Agent {
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(30)))
@@ -38,7 +46,7 @@ pub fn run(args: &FetchArgs) -> Result<String, Box<dyn std::error::Error>> {
     }
 
     eprintln!("  Fetching {}...", args.url);
-    let result = fetch_content(&args.url)?;
+    let (result, info) = fetch_content(&args.url)?;
 
     // Check Content-Signal header
     let content_signal = match &result {
@@ -53,7 +61,14 @@ pub fn run(args: &FetchArgs) -> Result<String, Box<dyn std::error::Error>> {
         }
     };
 
-    let (markdown, meta, tokens) = match result {
+    let mut warnings: Vec<String> = Vec::new();
+    if let Some(sig) = content_signal.as_deref()
+        && sig.to_lowercase().contains("ai-input=no")
+    {
+        warnings.push("site signals ai-input=no via Content-Signal".to_string());
+    }
+
+    let (markdown, meta, tokens, extraction) = match result {
         FetchResult::Markdown {
             body,
             server_tokens,
@@ -69,21 +84,63 @@ pub fn run(args: &FetchArgs) -> Result<String, Box<dyn std::error::Error>> {
             } else {
                 body
             };
-            (body, meta, token_count)
+            (body, meta, token_count, Extraction::ServerMarkdown)
         }
         FetchResult::Html { body, .. } => {
-            let (md, meta) = if args.raw {
-                (raw_fallback(&body), extract_meta_only(&body, &final_url))
+            let (md, meta, how) = if args.raw {
+                (
+                    raw_fallback(&body),
+                    extract_meta_only(&body, &final_url),
+                    Extraction::Raw,
+                )
             } else {
                 extract_readable(&body, &final_url)
             };
+            if how == Extraction::Raw && !args.raw {
+                warnings.push("readability failed; converted the whole page instead".to_string());
+            }
             let token_count = crate::estimate_tokens(&md);
-            (md, meta, token_count)
+            (md, meta, token_count, how)
         }
+    };
+
+    let (markdown, truncated) = match args.max_tokens {
+        Some(budget) => truncate_to_tokens(&markdown, budget),
+        None => (markdown, false),
+    };
+    if truncated {
+        warnings.push(format!(
+            "truncated to ~{} tokens from ~{}",
+            args.max_tokens.unwrap_or(0),
+            tokens
+        ));
+    }
+    let tokens = if truncated {
+        crate::estimate_tokens(&markdown)
+    } else {
+        tokens
     };
 
     if args.tokens {
         eprintln!("  ~{} tokens", tokens);
+    }
+
+    if args.json {
+        let payload = json_payload(
+            &args.url,
+            &final_url,
+            &info,
+            extraction,
+            meta.as_ref(),
+            tokens,
+            truncated,
+            &warnings,
+            &markdown,
+        );
+        if let Some(ref path) = args.output {
+            write_output(path, &payload)?;
+        }
+        return Ok(payload);
     }
 
     let mut output = String::new();
@@ -104,25 +161,14 @@ pub fn run(args: &FetchArgs) -> Result<String, Box<dyn std::error::Error>> {
     output.push_str(&markdown);
 
     if let Some(ref path) = args.output {
-        if output.trim().is_empty() {
-            return Err(
-                format!("Extraction produced no content; refusing to write {}", path).into(),
-            );
-        }
-        if let Some(parent) = std::path::Path::new(path).parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Cannot create '{}': {}", parent.display(), e))?;
-        }
-        std::fs::write(path, &output).map_err(|e| format!("Cannot write '{}': {}", path, e))?;
-        eprintln!("  Wrote {}", path);
+        write_output(path, &output)?;
     }
 
     Ok(output)
 }
 
-fn fetch_content(url: &str) -> Result<FetchResult, Box<dyn std::error::Error>> {
+fn fetch_content(url: &str) -> Result<(FetchResult, FetchInfo), Box<dyn std::error::Error>> {
+    let started = std::time::Instant::now();
     let agent = http_agent();
     let resp = agent
         .get(url)
@@ -162,24 +208,42 @@ fn fetch_content(url: &str) -> Result<FetchResult, Box<dyn std::error::Error>> {
 
     if content_type.contains("text/markdown") {
         let body = read_body(resp)?;
-        return Ok(FetchResult::Markdown {
-            body,
-            server_tokens,
-            content_signal,
-            final_url,
-        });
+        let info = FetchInfo {
+            status,
+            content_type: content_type.clone(),
+            bytes: body.len(),
+            elapsed_ms: started.elapsed().as_millis(),
+        };
+        return Ok((
+            FetchResult::Markdown {
+                body,
+                server_tokens,
+                content_signal,
+                final_url,
+            },
+            info,
+        ));
     }
 
     // GitHub serves raw .md as text/plain, and some servers send no type at all.
     let looks_markdown = url_path_is_markdown(url);
     if content_type.contains("text/plain") && looks_markdown {
         let body = read_body(resp)?;
-        return Ok(FetchResult::Markdown {
-            body,
-            server_tokens,
-            content_signal,
-            final_url,
-        });
+        let info = FetchInfo {
+            status,
+            content_type: content_type.clone(),
+            bytes: body.len(),
+            elapsed_ms: started.elapsed().as_millis(),
+        };
+        return Ok((
+            FetchResult::Markdown {
+                body,
+                server_tokens,
+                content_signal,
+                final_url,
+            },
+            info,
+        ));
     }
 
     let sniff_html = content_type.is_empty();
@@ -199,26 +263,53 @@ fn fetch_content(url: &str) -> Result<FetchResult, Box<dyn std::error::Error>> {
         let body = read_body(resp)?;
         let head = body.trim_start().to_ascii_lowercase();
         if !head.starts_with("<!doctype") && !head.starts_with("<html") {
-            return Ok(FetchResult::Markdown {
+            let info = FetchInfo {
+                status,
+                content_type: content_type.clone(),
+                bytes: body.len(),
+                elapsed_ms: started.elapsed().as_millis(),
+            };
+            return Ok((
+                FetchResult::Markdown {
+                    body,
+                    server_tokens,
+                    content_signal,
+                    final_url,
+                },
+                info,
+            ));
+        }
+        let info = FetchInfo {
+            status,
+            content_type: content_type.clone(),
+            bytes: body.len(),
+            elapsed_ms: started.elapsed().as_millis(),
+        };
+        return Ok((
+            FetchResult::Html {
                 body,
-                server_tokens,
                 content_signal,
                 final_url,
-            });
-        }
-        return Ok(FetchResult::Html {
-            body,
-            content_signal,
-            final_url,
-        });
+            },
+            info,
+        ));
     }
 
     let body = read_body(resp)?;
-    Ok(FetchResult::Html {
-        body,
-        content_signal,
-        final_url,
-    })
+    let info = FetchInfo {
+        status,
+        content_type,
+        bytes: body.len(),
+        elapsed_ms: started.elapsed().as_millis(),
+    };
+    Ok((
+        FetchResult::Html {
+            body,
+            content_signal,
+            final_url,
+        },
+        info,
+    ))
 }
 
 fn read_body(resp: ureq::http::Response<ureq::Body>) -> Result<String, Box<dyn std::error::Error>> {
@@ -317,7 +408,7 @@ fn sanitize_html(html: &str) -> String {
     result
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct ArticleMeta {
     title: Option<String>,
     byline: Option<String>,
@@ -331,11 +422,11 @@ struct ArticleMeta {
 /// Metadata without the article body, for --raw. dom_smoothie already parses
 /// OpenGraph, Twitter and JSON-LD, so this needs no parser of its own.
 fn extract_meta_only(html: &str, url: &str) -> Option<ArticleMeta> {
-    let (_, meta) = extract_readable(html, url);
+    let (_, meta, _) = extract_readable(html, url);
     meta
 }
 
-fn extract_readable(html: &str, url: &str) -> (String, Option<ArticleMeta>) {
+fn extract_readable(html: &str, url: &str) -> (String, Option<ArticleMeta>, Extraction) {
     let cfg = dom_smoothie::Config {
         text_mode: dom_smoothie::TextMode::Markdown,
         ..Default::default()
@@ -350,7 +441,7 @@ fn extract_readable(html: &str, url: &str) -> (String, Option<ArticleMeta>) {
                         "  Warning: readability returned empty content, falling back to raw conversion"
                     );
                     let md = raw_fallback(html);
-                    return (md, None);
+                    return (md, None, Extraction::Raw);
                 }
                 let meta = ArticleMeta {
                     title: if article.title.is_empty() {
@@ -370,7 +461,7 @@ fn extract_readable(html: &str, url: &str) -> (String, Option<ArticleMeta>) {
                     md.push_str(&format!("# {}\n\n", article.title));
                 }
                 md.push_str(&text);
-                (clean_markdown(&md), Some(meta))
+                (clean_markdown(&md), Some(meta), Extraction::Readability)
             }
             Err(e) => {
                 eprintln!(
@@ -378,7 +469,7 @@ fn extract_readable(html: &str, url: &str) -> (String, Option<ArticleMeta>) {
                     e
                 );
                 let md = raw_fallback(html);
-                (md, None)
+                (md, None, Extraction::Raw)
             }
         },
         Err(e) => {
@@ -387,9 +478,152 @@ fn extract_readable(html: &str, url: &str) -> (String, Option<ArticleMeta>) {
                 e
             );
             let md = raw_fallback(html);
-            (md, None)
+            (md, None, Extraction::Raw)
         }
     }
+}
+
+fn write_output(path: &str, content: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if content.trim().is_empty() {
+        return Err(format!("Extraction produced no content; refusing to write {}", path).into());
+    }
+    if let Some(parent) = std::path::Path::new(path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Cannot create '{}': {}", parent.display(), e))?;
+    }
+    std::fs::write(path, content).map_err(|e| format!("Cannot write '{}': {}", path, e))?;
+    eprintln!("  Wrote {}", path);
+    Ok(())
+}
+
+/// Build the --json payload. Hand-rolled to match the house style in
+/// export.rs; the escaping is shared via crate::json.
+#[allow(clippy::too_many_arguments)]
+fn json_payload(
+    requested_url: &str,
+    final_url: &str,
+    info: &FetchInfo,
+    extraction: Extraction,
+    meta: Option<&ArticleMeta>,
+    tokens: u64,
+    truncated: bool,
+    warnings: &[String],
+    content: &str,
+) -> String {
+    use crate::json::quote;
+    let mut out = String::from("{\n");
+    out.push_str(&format!("  \"url\": {},\n", quote(requested_url)));
+    out.push_str(&format!("  \"final_url\": {},\n", quote(final_url)));
+    out.push_str(&format!("  \"status\": {},\n", info.status));
+    out.push_str(&format!(
+        "  \"content_type\": {},\n",
+        quote(&info.content_type)
+    ));
+    out.push_str(&format!(
+        "  \"extraction\": {},\n",
+        quote(extraction.as_str())
+    ));
+    out.push_str(&format!("  \"bytes\": {},\n", info.bytes));
+    out.push_str(&format!("  \"elapsed_ms\": {},\n", info.elapsed_ms));
+    out.push_str(&format!("  \"tokens\": {},\n", tokens));
+    out.push_str(&format!("  \"truncated\": {},\n", truncated));
+
+    let m = meta.cloned().unwrap_or_default();
+    for (key, value) in [
+        ("title", &m.title),
+        ("author", &m.byline),
+        ("date", &m.published_time),
+        ("excerpt", &m.excerpt),
+        ("image", &m.image),
+        ("site_name", &m.site_name),
+    ] {
+        match value {
+            Some(v) => out.push_str(&format!("  {}: {},\n", quote(key), quote(v))),
+            None => out.push_str(&format!("  {}: null,\n", quote(key))),
+        }
+    }
+
+    let warned: Vec<String> = warnings.iter().map(|w| quote(w)).collect();
+    out.push_str(&format!("  \"warnings\": [{}],\n", warned.join(", ")));
+    out.push_str(&format!("  \"content\": {}\n", quote(content)));
+    out.push_str("}\n");
+    out
+}
+
+/// How the markdown was produced, reported by --json and --metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Extraction {
+    /// The server returned markdown; no conversion happened.
+    ServerMarkdown,
+    /// Readability picked the article out of an HTML page.
+    Readability,
+    /// The whole page was converted, either via --raw or a readability failure.
+    Raw,
+}
+
+impl Extraction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Extraction::ServerMarkdown => "server-markdown",
+            Extraction::Readability => "readability",
+            Extraction::Raw => "raw",
+        }
+    }
+}
+
+/// Cut `markdown` to roughly `max_tokens`, at a block boundary.
+///
+/// Returns the text and whether anything was removed. Never cuts inside a
+/// fenced code block: a half-open fence would swallow the rest of the document
+/// in any renderer downstream.
+fn truncate_to_tokens(markdown: &str, max_tokens: u64) -> (String, bool) {
+    if crate::estimate_tokens(markdown) <= max_tokens {
+        return (markdown.to_string(), false);
+    }
+
+    let budget = max_tokens.saturating_mul(4) as usize;
+    let mut fence = crate::text::FenceTracker::new();
+    let mut taken = 0usize;
+    // Byte offset of the end of the last block that fitted whole.
+    let mut cut = 0usize;
+    let mut offset = 0usize;
+
+    for line in markdown.split_inclusive('\n') {
+        let in_fence = fence.feed(line);
+        if taken + line.len() > budget {
+            break;
+        }
+        taken += line.len();
+        offset += line.len();
+        if !in_fence && line.trim().is_empty() {
+            cut = offset;
+        }
+    }
+
+    // No block boundary fitted; fall back to whatever whole lines did.
+    if cut == 0 {
+        cut = offset;
+    }
+    // Not even one line fitted -- a document with no newlines. Cut inside it at
+    // a word boundary rather than returning nothing.
+    if cut == 0 {
+        let end = markdown
+            .char_indices()
+            .take_while(|(i, _)| *i < budget)
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+        cut = markdown[..end].rfind(char::is_whitespace).unwrap_or(end);
+    }
+    if cut == 0 {
+        return (String::new(), true);
+    }
+
+    let mut out = markdown[..cut].trim_end().to_string();
+    out.push_str("\n\n*[truncated]*\n");
+    (out, true)
 }
 
 /// Sanitise, then convert. Every path that hands raw page HTML to htmd must go
@@ -787,5 +1021,68 @@ mod tests {
             clean_markdown(&once),
             "second pass must not strip more"
         );
+    }
+    #[test]
+    fn test_truncate_leaves_short_input_alone() {
+        let (out, cut) = truncate_to_tokens("# A\n\nshort\n", 1000);
+        assert!(!cut);
+        assert_eq!(out, "# A\n\nshort\n");
+    }
+
+    #[test]
+    fn test_truncate_cuts_and_marks() {
+        let md = "# A\n\n".to_string() + &"word ".repeat(2000);
+        let (out, cut) = truncate_to_tokens(&md, 50);
+        assert!(cut);
+        assert!(out.ends_with("*[truncated]*\n"), "got: {:?}", out);
+        assert!(crate::estimate_tokens(&out) < crate::estimate_tokens(&md));
+    }
+
+    #[test]
+    fn test_truncate_never_splits_a_fence() {
+        // The budget lands inside the code block; the cut must fall before it.
+        let md = format!(
+            "intro\n\n```rust\n{}\n```\n\ntail\n",
+            "let x = 1;\n".repeat(200)
+        );
+        let (out, cut) = truncate_to_tokens(&md, 40);
+        assert!(cut);
+        assert_eq!(
+            out.lines().filter(|l| l.starts_with("```")).count() % 2,
+            0,
+            "unbalanced fence would swallow the rest of the document: {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn test_truncate_prefers_a_block_boundary() {
+        let md = "para one\n\npara two\n\npara three\n\n".to_string() + &"x ".repeat(4000);
+        let (out, _) = truncate_to_tokens(&md, 20);
+        assert!(out.contains("para one"), "got: {:?}", out);
+        assert!(
+            !out.contains("xxxx"),
+            "should stop before the filler: {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn test_truncate_single_long_paragraph_still_yields_text() {
+        let md = "a ".repeat(5000);
+        let (out, cut) = truncate_to_tokens(&md, 30);
+        assert!(cut);
+        assert!(
+            out.trim_end().len() > 10,
+            "must not return nothing: {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn test_extraction_names_are_stable() {
+        assert_eq!(Extraction::ServerMarkdown.as_str(), "server-markdown");
+        assert_eq!(Extraction::Readability.as_str(), "readability");
+        assert_eq!(Extraction::Raw.as_str(), "raw");
     }
 }
