@@ -1808,3 +1808,70 @@ fn test_export_html_keeps_the_users_own_script() {
     );
     let _ = std::fs::remove_file(&tmp);
 }
+
+/// Serve one canned response on a loopback port, then stop.
+fn serve_once(body: &'static str, content_type: &'static str) -> u16 {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().take(1) {
+            let Ok(mut s) = stream else { continue };
+            let mut buf = [0u8; 1024];
+            let _ = s.read(&mut buf);
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                content_type,
+                body.len(),
+                body
+            );
+            let _ = s.write_all(resp.as_bytes());
+        }
+    });
+    port
+}
+
+#[test]
+fn test_bare_url_extracts_instead_of_dumping_html() {
+    // `mdx <url>` used to do a bare GET and feed raw tags to the renderer, so
+    // an HTML page printed its own <style> block to the terminal. It now goes
+    // through the same pipeline as `mdx fetch`.
+    let port = serve_once(
+        "<!doctype html><html><head><title>T</title><style>body{color:red}</style></head>\
+         <body><h1>Real Heading</h1><p>Article body that is long enough for readability \
+         to treat it as the main content of this page.</p></body></html>",
+        "text/html",
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["-w", "100"])
+        .arg(format!("http://127.0.0.1:{}/page.html", port))
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("Failed to execute mdx");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("<style>") && !stdout.contains("<!doctype"),
+        "raw HTML must not reach the terminal, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Article body"),
+        "the article should survive, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_bare_url_still_renders_a_markdown_document() {
+    // The documented short form: a URL that serves markdown.
+    let port = serve_once("# Markdown Title\n\nSome body text.\n", "text/markdown");
+    let out = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["-w", "100", "--plain"])
+        .arg(format!("http://127.0.0.1:{}/doc.md", port))
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("Failed to execute mdx");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Markdown Title"), "got: {}", stdout);
+    assert!(stdout.contains("Some body text"), "got: {}", stdout);
+}

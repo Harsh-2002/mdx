@@ -30,7 +30,8 @@ cargo install --git https://github.com/Harsh-2002/mdx --features serve
 mdx file.md                          # render in terminal
 mdx file.md --pager                  # render and pipe through less
 cat README.md | mdx                  # read from stdin
-mdx https://example.com/doc.md       # render from URL
+mdx https://example.com/doc.md       # render markdown from a URL
+mdx https://example.com              # or extract an article from a page
 
 mdx serve file.md                    # browser preview with live reload
 mdx serve ./notes/                   # serve a directory as a note-taking app
@@ -161,7 +162,7 @@ mdx fetch https://example.com | llm        # pipe to LLM
 | `--tokens` | Print an estimated token count to stderr |
 | `-p, --pager` | Page the rendered output |
 
-**`mdx fetch <url>` and `mdx <url>` are different.** `fetch` downloads a web *page* and extracts the article; `mdx <url>` expects the URL to serve a markdown file and renders it as-is.
+`mdx <url>` runs the same pipeline: a URL serving markdown renders as markdown, a web page has its article extracted. `mdx fetch` adds the flags above — `-o`, `--raw`, `--metadata`, `--tokens` — and writes raw markdown when piped, where `mdx <url>` always renders for the terminal.
 
 ### `mdx export` — Format conversion
 
@@ -330,7 +331,7 @@ PDF and EPUB render the same document model; they are not in the table because t
 - **Math** — inline `$...$` and display `$$...$$`; KaTeX in browser preview, Unicode in the terminal (`\frac{a}{b}` renders as `a/b`)
 - **Docs extensions** — description lists, `==highlight==`, `^superscript^`, `[[wikilinks]]` and inline footnotes, on top of GFM
 - **Images** — inline image rendering in supported terminals (iTerm2, kitty)
-- **URL fetching** — `mdx <url>` renders a markdown file from a URL; use `mdx fetch <url>` for web *pages*, which extracts the article
+- **URL fetching** — `mdx <url>` and `mdx fetch <url>` share one pipeline: markdown URLs render as markdown, web pages have their article extracted
 - **Web page extraction** — `mdx fetch` extracts article content as clean markdown, with MFA content negotiation
 - **Markdown for Agents** — `mdx serve` responds with raw markdown when agents send `Accept: text/markdown`
 - **Live reload** — `mdx serve` opens a browser preview that updates on file changes

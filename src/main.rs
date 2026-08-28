@@ -274,21 +274,21 @@ fn main() {
         Some(path) if path.starts_with("http://") || path.starts_with("https://") => {
             #[cfg(feature = "url")]
             {
-                eprintln!("  Fetching {}...", path);
-                let agent: ureq::Agent = ureq::Agent::config_builder()
-                    .timeout_global(Some(std::time::Duration::from_secs(30)))
-                    .build()
-                    .into();
-                match agent.get(path).call() {
-                    Ok(resp) => resp.into_body().read_to_string().unwrap_or_else(|e| {
-                        eprintln!("Error reading response: {}", e);
-                        std::process::exit(1);
-                    }),
-                    Err(e) => {
-                        eprintln!("Error fetching URL: {}", e);
-                        std::process::exit(1);
-                    }
-                }
+                // Same pipeline as `mdx fetch`: a markdown URL renders as
+                // markdown, an HTML page has its article extracted. The bare GET
+                // this used to do fed raw tags into the renderer.
+                let fa = md::cli::FetchArgs {
+                    url: path.clone(),
+                    output: None,
+                    raw: false,
+                    metadata: false,
+                    tokens: false,
+                    pager: false,
+                };
+                md::fetch::run(&fa).unwrap_or_else(|e| {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                })
             }
             #[cfg(not(feature = "url"))]
             {
