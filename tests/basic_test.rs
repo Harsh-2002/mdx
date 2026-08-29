@@ -1537,12 +1537,9 @@ fn test_export_pdf_mermaid_never_uploads_without_flag() {
         .expect("Failed to execute mdx");
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
-    // PDF export loads the built-in Helvetica/Courier metrics by name
-    // (export.rs, markdown2pdf::fonts::load_builtin_font_family). A host with
-    // neither -- most Linux images ship Nimbus Sans, not Helvetica -- cannot
-    // produce a PDF at all. That is a pre-existing limitation, not something
-    // this test can assert away, so skip rather than fail spuriously in CI.
-    if stderr.contains("Could not find a font for built-in metrics") {
+    // A host with no usable font at all cannot produce a PDF. Skip rather than
+    // fail spuriously in CI.
+    if stderr.contains("no usable font found") {
         eprintln!("skipping: no Helvetica/Arial on this host, PDF export unavailable");
         let _ = std::fs::remove_file(&tmp);
         return;
@@ -1874,4 +1871,96 @@ fn test_bare_url_still_renders_a_markdown_document() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Markdown Title"), "got: {}", stdout);
     assert!(stdout.contains("Some body text"), "got: {}", stdout);
+}
+
+// ── PDF export: fonts resolve and the document renders ───────────────
+
+/// Skip when the host has no font at all; otherwise return the PDF bytes.
+fn export_pdf(name: &str, md: &str) -> Option<Vec<u8>> {
+    let tmp = write_tmp(name, md);
+    let pdf = std::env::temp_dir().join(format!("mdx-test-{}.pdf", name));
+    let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .args(["export", "--to", "pdf", "-o"])
+        .arg(&pdf)
+        .arg(&tmp)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("Failed to execute mdx");
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_file(&tmp);
+    if stderr.contains("no usable font found") {
+        eprintln!("skipping {}: no usable font on this host", name);
+        return None;
+    }
+    assert!(output.status.success(), "export failed: {}", stderr);
+    let bytes = std::fs::read(&pdf).expect("PDF should exist");
+    let _ = std::fs::remove_file(&pdf);
+    Some(bytes)
+}
+
+#[test]
+fn test_export_pdf_is_a_valid_document() {
+    let Some(bytes) = export_pdf(
+        "valid",
+        "# Title\n\nRegular, **bold**, *italic* and `code`.\n",
+    ) else {
+        return;
+    };
+    assert_eq!(&bytes[0..4], b"%PDF", "should be a PDF");
+    let tail = bytes
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .map_or(&bytes[..], |i| &bytes[..=i]);
+    assert!(tail.ends_with(b"%%EOF"), "should end with the PDF trailer");
+    assert!(
+        bytes.len() > 1000,
+        "a rendered page should not be near-empty"
+    );
+}
+
+/// The font family must carry all four styles. Loading it wrong -- or dropping
+/// a style -- makes genpdfi fail the moment bold or italic text is laid out.
+#[test]
+fn test_export_pdf_embeds_a_font_family() {
+    let Some(bytes) = export_pdf("fontfam", "**bold** *italic* `mono` plain\n") else {
+        return;
+    };
+    let count = bytes
+        .windows(15)
+        .filter(|w| w.starts_with(b"/FontDescriptor"))
+        .count();
+    assert!(
+        count >= 2,
+        "expected a descriptor for the sans and mono families, got {}",
+        count
+    );
+    assert!(
+        bytes.windows(9).any(|w| w.starts_with(b"/FontFile")),
+        "the resolved system font should be embedded"
+    );
+}
+
+/// Non-Latin text must not abort the export.
+#[test]
+fn test_export_pdf_handles_non_ascii() {
+    let Some(bytes) = export_pdf("unicode", "# Café\n\nÜnïcodé · Ωμέγα · Привет\n")
+    else {
+        return;
+    };
+    assert_eq!(&bytes[0..4], b"%PDF");
+}
+
+/// Code blocks and tables are rasterized, so they exercise the image path.
+#[test]
+fn test_export_pdf_renders_code_and_tables() {
+    let Some(bytes) = export_pdf(
+        "codetable",
+        "```rust\nfn main() {}\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n",
+    ) else {
+        return;
+    };
+    assert!(
+        bytes.windows(14).any(|w| w.starts_with(b"/Subtype/Image")),
+        "code block and table should render"
+    );
 }
