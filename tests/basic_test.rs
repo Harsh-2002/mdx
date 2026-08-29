@@ -1964,3 +1964,32 @@ fn test_export_pdf_renders_code_and_tables() {
         "code block and table should render"
     );
 }
+
+/// Every .bold() call in export.rs -- inline bold, headings, table headers,
+/// alert titles, list bullets -- resolved to the regular face while all four
+/// style slots held the same font, so none of them rendered bold.
+#[test]
+fn test_export_pdf_bold_is_not_the_regular_face() {
+    let plain = export_pdf("wplain", "The quick brown fox jumps over the lazy dog.\n");
+    let bold = export_pdf(
+        "wbold",
+        "**The quick brown fox jumps over the lazy dog.**\n",
+    );
+    let (Some(plain), Some(bold)) = (plain, bold) else {
+        return;
+    };
+    assert_ne!(plain, bold, "bold text must not render as the regular face");
+}
+
+#[test]
+fn test_export_pdf_italic_is_not_the_regular_face() {
+    let plain = export_pdf("iplain", "The quick brown fox jumps over the lazy dog.\n");
+    let ital = export_pdf("iital", "*The quick brown fox jumps over the lazy dog.*\n");
+    let (Some(plain), Some(ital)) = (plain, ital) else {
+        return;
+    };
+    assert_ne!(
+        plain, ital,
+        "italic text must not render as the regular face"
+    );
+}
