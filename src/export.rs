@@ -210,14 +210,16 @@ fn font_files() -> Vec<(String, PathBuf)> {
             if !entry.file_type().is_file() {
                 continue;
             }
-            let name = entry.file_name().to_string_lossy().to_lowercase();
             // .ttc collections are not supported by the font parser.
+            let name = entry.file_name().to_string_lossy().to_lowercase();
             if !(name.ends_with(".ttf") || name.ends_with(".otf")) {
                 continue;
             }
             out.push((name, entry.into_path()));
         }
     }
+    // Sorted so the last-resort pick does not depend on walk order.
+    out.sort();
     out
 }
 
@@ -242,10 +244,6 @@ fn pick_font(files: &[(String, PathBuf)], candidates: &[&str]) -> Option<PathBuf
     None
 }
 
-fn find_font_file(candidates: &[&str]) -> Option<PathBuf> {
-    pick_font(&font_files(), candidates)
-}
-
 /// Build a family from one font file, reused for every style.
 fn font_family_from_file(
     path: &Path,
@@ -260,62 +258,24 @@ fn font_family_from_file(
     })
 }
 
-/// The four base-14 styles for a family name.
-fn builtin_variants(name: &str) -> [printpdf::BuiltinFont; 4] {
-    use printpdf::BuiltinFont as B;
-    match name {
-        "Courier" => [
-            B::Courier,
-            B::CourierBold,
-            B::CourierOblique,
-            B::CourierBoldOblique,
-        ],
-        "Times" => [
-            B::TimesRoman,
-            B::TimesBold,
-            B::TimesItalic,
-            B::TimesBoldItalic,
-        ],
-        _ => [
-            B::Helvetica,
-            B::HelveticaBold,
-            B::HelveticaOblique,
-            B::HelveticaBoldOblique,
-        ],
-    }
-}
-
-/// Build a base-14 family. The glyphs come from the reader, but genpdfi still
-/// needs a real font on disk to measure with.
-fn font_family_builtin(
-    name: &str,
-    metrics: &Path,
-) -> Result<genpdfi::fonts::FontFamily<genpdfi::fonts::FontData>, Box<dyn std::error::Error>> {
-    let data = std::sync::Arc::new(std::fs::read(metrics)?);
-    let [regular, bold, italic, bold_italic] = builtin_variants(name);
-    Ok(genpdfi::fonts::FontFamily {
-        regular: genpdfi::fonts::FontData::new_shared(data.clone(), Some(regular))?,
-        bold: genpdfi::fonts::FontData::new_shared(data.clone(), Some(bold))?,
-        italic: genpdfi::fonts::FontData::new_shared(data.clone(), Some(italic))?,
-        bold_italic: genpdfi::fonts::FontData::new_shared(data, Some(bold_italic))?,
-    })
-}
-
-/// Load a PDF font family, preferring a real system font file and falling back
-/// to base-14 metrics taken from whatever font the host does have.
+/// Load a PDF font family, preferring a real system font file.
+///
+/// The last resort embeds whatever font the host does have. That beats the
+/// base-14 builtins it replaced: those cover WinAnsi only, and pairing them
+/// with an arbitrary font's metrics mismeasures every line.
 fn load_pdf_font(
     candidates: &[&str],
-    builtin: &str,
 ) -> Result<genpdfi::fonts::FontFamily<genpdfi::fonts::FontData>, Box<dyn std::error::Error>> {
-    if let Some(path) = find_font_file(candidates)
+    let files = font_files();
+    if let Some(path) = pick_font(&files, candidates)
         && let Ok(family) = font_family_from_file(&path)
     {
         return Ok(family);
     }
-    if let Some((_, path)) = font_files().into_iter().next()
-        && let Ok(family) = font_family_builtin(builtin, &path)
-    {
-        return Ok(family);
+    for (_, path) in &files {
+        if let Ok(family) = font_family_from_file(path) {
+            return Ok(family);
+        }
     }
     Err(format!(
         "Font error: no usable font found. Searched for {:?} under {:?}.",
@@ -869,11 +829,11 @@ pub fn export_pdf(
     let arena = typed_arena::Arena::new();
     let root = parse_markdown(&arena, markdown);
 
-    let font = load_pdf_font(SANS_CANDIDATES, "Helvetica")?;
+    let font = load_pdf_font(SANS_CANDIDATES)?;
     let mut doc = genpdfi::Document::new(font);
 
     // Monospace family for code blocks.
-    let courier = load_pdf_font(MONO_CANDIDATES, "Courier")?;
+    let courier = load_pdf_font(MONO_CANDIDATES)?;
     let courier_ref = doc.add_font_family(courier);
 
     let title = extract_title(root).unwrap_or_else(|| "document".to_string());
@@ -2148,15 +2108,6 @@ mod tests {
         assert!(pick_font(&files(&["comic.ttf"]), &["Helvetica"]).is_none());
     }
 
-    #[test]
-    fn test_builtin_variants_map_to_their_own_family() {
-        use printpdf::BuiltinFont as B;
-        assert_eq!(builtin_variants("Courier")[0], B::Courier);
-        assert_eq!(builtin_variants("Courier")[1], B::CourierBold);
-        assert_eq!(builtin_variants("Times")[0], B::TimesRoman);
-        assert_eq!(builtin_variants("Helvetica")[3], B::HelveticaBoldOblique);
-        assert_eq!(builtin_variants("whatever")[0], B::Helvetica);
-    }
     use super::*;
 
     #[test]
