@@ -1667,6 +1667,7 @@ dependencies = [
  "syntect",
  "terminal_size",
  "textwrap",
+ "time 0.3.47",
  "tokio",
  "tokio-stream",
  "tower-http",
@@ -2081,8 +2082,6 @@ dependencies = [
 [[package]]
 name = "printpdf"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c30a4cc87c3ca9a98f4970db158a7153f8d1ec8076e005751173c57836380b1d"
 dependencies = [
  "image 0.24.9",
  "lopdf 0.31.0",

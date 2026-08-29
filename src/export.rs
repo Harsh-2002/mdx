@@ -1087,6 +1087,17 @@ pub fn export_pdf(
     doc.set_paper_size(genpdfi::PaperSize::A4);
     doc.set_minimal_conformance();
 
+    // printpdf stamps CreationDate/ModDate with the wall clock, so two exports
+    // of the same document differ. SOURCE_DATE_EPOCH is the reproducible-builds
+    // convention; without it, pin the epoch.
+    let stamp = std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .and_then(|s| time::OffsetDateTime::from_unix_timestamp(s).ok())
+        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+    doc.set_creation_date(stamp);
+    doc.set_modification_date(stamp);
+
     let mut decorator = genpdfi::SimplePageDecorator::new();
     decorator.set_margins(genpdfi::Margins::trbl(20, 15, 20, 15));
     decorator.set_header(|page| {
