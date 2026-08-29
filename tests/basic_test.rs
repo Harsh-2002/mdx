@@ -2049,3 +2049,17 @@ fn test_export_pdf_is_reproducible() {
         "two exports of the same document must be byte-identical"
     );
 }
+
+/// Table header cells have square corners, so their background is one stroked
+/// line rather than a rasterized PNG written through a temp file.
+#[test]
+fn test_export_pdf_square_backgrounds_are_not_rasterized() {
+    let Some(bytes) = export_pdf("squarebg", "| a | b |\n|---|---|\n| 1 | 2 |\n") else {
+        return;
+    };
+    assert!(
+        !bytes.windows(14).any(|w| w.starts_with(b"/Subtype/Image")),
+        "a table alone should embed no images"
+    );
+    assert!(bytes.windows(4).any(|w| w == b"%PDF"));
+}
