@@ -244,17 +244,67 @@ fn pick_font(files: &[(String, PathBuf)], candidates: &[&str]) -> Option<PathBuf
     None
 }
 
-/// Build a family from one font file, reused for every style.
-fn font_family_from_file(
-    path: &Path,
+/// Filename suffixes each style is published under, most specific first.
+/// Covers the schemes actually shipped: `LiberationSans-Bold`, `FreeSansBold`,
+/// `DejaVuSans-Oblique`, `C059-BdIta` and Windows' `arialbd`.
+const BOLD_SUFFIXES: &[&str] = &["-bold", "bold", " bold", "-bd", "bd"];
+const ITALIC_SUFFIXES: &[&str] = &[
+    "-italic", "italic", " italic", "-oblique", "oblique", "-it", "i",
+];
+const BOLD_ITALIC_SUFFIXES: &[&str] = &[
+    "-bolditalic",
+    "bolditalic",
+    " bold italic",
+    "-boldoblique",
+    "boldoblique",
+    "-bdita",
+    "-bi",
+    "bi",
+];
+
+/// Find the styled sibling of a regular font file, e.g. DejaVuSans.ttf -> DejaVuSans-Bold.ttf.
+fn style_variant(
+    files: &[(String, PathBuf)],
+    regular: &Path,
+    suffixes: &[&str],
+) -> Option<PathBuf> {
+    let stem = regular.file_stem()?.to_string_lossy().to_lowercase();
+    let base = ["-regular", "regular", "-roman", "roman", "-book", "book"]
+        .iter()
+        .find_map(|s| stem.strip_suffix(s))
+        .unwrap_or(stem.as_str());
+    let ext = regular.extension()?.to_string_lossy().to_lowercase();
+    for suffix in suffixes {
+        let want = format!("{}{}.{}", base, suffix, ext);
+        if let Some((_, path)) = files.iter().find(|(name, _)| *name == want) {
+            return Some(path.clone());
+        }
+    }
+    None
+}
+
+/// Build a family from a regular font file, picking up its bold and italic
+/// siblings. Without them every style resolves to the same face, so `**bold**`
+/// and `*italic*` render identically to body text.
+fn font_family(
+    files: &[(String, PathBuf)],
+    regular: &Path,
 ) -> Result<genpdfi::fonts::FontFamily<genpdfi::fonts::FontData>, Box<dyn std::error::Error>> {
-    let data = std::sync::Arc::new(std::fs::read(path)?);
-    let regular = genpdfi::fonts::FontData::new_shared(data, None)?;
+    let load = |path: &Path| -> Option<genpdfi::fonts::FontData> {
+        let data = std::fs::read(path).ok()?;
+        genpdfi::fonts::FontData::new(data, None).ok()
+    };
+    let base = genpdfi::fonts::FontData::new(std::fs::read(regular)?, None)?;
+    let pick = |suffixes: &[&str]| {
+        style_variant(files, regular, suffixes)
+            .and_then(|p| load(&p))
+            .unwrap_or_else(|| base.clone())
+    };
     Ok(genpdfi::fonts::FontFamily {
-        bold: regular.clone(),
-        italic: regular.clone(),
-        bold_italic: regular.clone(),
-        regular,
+        bold: pick(BOLD_SUFFIXES),
+        italic: pick(ITALIC_SUFFIXES),
+        bold_italic: pick(BOLD_ITALIC_SUFFIXES),
+        regular: base,
     })
 }
 
@@ -268,12 +318,12 @@ fn load_pdf_font(
 ) -> Result<genpdfi::fonts::FontFamily<genpdfi::fonts::FontData>, Box<dyn std::error::Error>> {
     let files = font_files();
     if let Some(path) = pick_font(&files, candidates)
-        && let Ok(family) = font_family_from_file(&path)
+        && let Ok(family) = font_family(&files, &path)
     {
         return Ok(family);
     }
     for (_, path) in &files {
-        if let Ok(family) = font_family_from_file(path) {
+        if let Ok(family) = font_family(&files, path) {
             return Ok(family);
         }
     }
@@ -2069,6 +2119,84 @@ mod tests {
             .iter()
             .map(|n| (n.to_lowercase(), PathBuf::from("/fonts").join(n)))
             .collect()
+    }
+
+    #[test]
+    fn test_style_variant_hyphenated_family() {
+        let f = files(&[
+            "LiberationSans-Regular.ttf",
+            "LiberationSans-Bold.ttf",
+            "LiberationSans-Italic.ttf",
+            "LiberationSans-BoldItalic.ttf",
+        ]);
+        let reg = PathBuf::from("/fonts/LiberationSans-Regular.ttf");
+        assert_eq!(
+            style_variant(&f, &reg, BOLD_SUFFIXES).unwrap(),
+            PathBuf::from("/fonts/LiberationSans-Bold.ttf")
+        );
+        assert_eq!(
+            style_variant(&f, &reg, BOLD_ITALIC_SUFFIXES).unwrap(),
+            PathBuf::from("/fonts/LiberationSans-BoldItalic.ttf")
+        );
+    }
+
+    /// FreeSans joins the style straight onto the name, with no separator.
+    #[test]
+    fn test_style_variant_unseparated_family() {
+        let f = files(&["FreeSans.ttf", "FreeSansBold.ttf", "FreeSansOblique.ttf"]);
+        let reg = PathBuf::from("/fonts/FreeSans.ttf");
+        assert_eq!(
+            style_variant(&f, &reg, BOLD_SUFFIXES).unwrap(),
+            PathBuf::from("/fonts/FreeSansBold.ttf")
+        );
+        assert_eq!(
+            style_variant(&f, &reg, ITALIC_SUFFIXES).unwrap(),
+            PathBuf::from("/fonts/FreeSansOblique.ttf")
+        );
+    }
+
+    #[test]
+    fn test_style_variant_windows_abbreviations() {
+        let f = files(&["arial.ttf", "arialbd.ttf", "ariali.ttf", "arialbi.ttf"]);
+        let reg = PathBuf::from("/fonts/arial.ttf");
+        assert_eq!(
+            style_variant(&f, &reg, BOLD_SUFFIXES).unwrap(),
+            PathBuf::from("/fonts/arialbd.ttf")
+        );
+        assert_eq!(
+            style_variant(&f, &reg, ITALIC_SUFFIXES).unwrap(),
+            PathBuf::from("/fonts/ariali.ttf")
+        );
+    }
+
+    /// Roman is the regular weight for the URW families.
+    #[test]
+    fn test_style_variant_strips_roman() {
+        let f = files(&["C059-Roman.otf", "C059-Bold.otf", "C059-BdIta.otf"]);
+        let reg = PathBuf::from("/fonts/C059-Roman.otf");
+        assert_eq!(
+            style_variant(&f, &reg, BOLD_SUFFIXES).unwrap(),
+            PathBuf::from("/fonts/C059-Bold.otf")
+        );
+        assert_eq!(
+            style_variant(&f, &reg, BOLD_ITALIC_SUFFIXES).unwrap(),
+            PathBuf::from("/fonts/C059-BdIta.otf")
+        );
+    }
+
+    /// The extension must match, or an .otf bold gets paired with a .ttf regular.
+    #[test]
+    fn test_style_variant_keeps_the_extension() {
+        let f = files(&["DejaVuSans.ttf", "DejaVuSans-Bold.otf"]);
+        let reg = PathBuf::from("/fonts/DejaVuSans.ttf");
+        assert!(style_variant(&f, &reg, BOLD_SUFFIXES).is_none());
+    }
+
+    #[test]
+    fn test_style_variant_returns_none_when_absent() {
+        let f = files(&["DejaVuSans.ttf"]);
+        let reg = PathBuf::from("/fonts/DejaVuSans.ttf");
+        assert!(style_variant(&f, &reg, BOLD_SUFFIXES).is_none());
     }
 
     #[test]
