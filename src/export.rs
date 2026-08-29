@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
 use comrak::nodes::{AlertType, AstNode, ListType, NodeValue};
-#[cfg(not(feature = "images"))]
 use genpdfi::Position;
 #[cfg(feature = "images")]
 use genpdfi::Scale;
@@ -655,8 +654,31 @@ impl<E: Element> Element for FilledElement<E> {
     }
 }
 
-/// Draw a filled background behind content. Tries rounded corners (image-based)
-/// first, falls back to a thick-line rectangle if that fails or images feature is off.
+/// Fill a square-cornered rectangle with one stroked line.
+///
+/// A horizontal line of thickness `h` with the PDF default butt cap paints
+/// exactly its bounding box, so this is pixel-exact -- and it costs one
+/// operator against a PNG encode, a temp file and an embedded XObject.
+fn draw_square_background(
+    color: style::Color,
+    width: Mm,
+    height: Mm,
+    area: genpdfi::render::Area<'_>,
+) {
+    let mid_y = height / 2.0;
+    area.draw_line(
+        vec![
+            Position::new(Mm::from(0), mid_y),
+            Position::new(width, mid_y),
+        ],
+        style::LineStyle::new()
+            .with_thickness(height)
+            .with_color(color),
+    );
+}
+
+/// Draw a filled background behind content. Rounded corners need a raster
+/// image; square ones are drawn directly.
 #[cfg(feature = "images")]
 fn draw_filled_background(
     color: style::Color,
@@ -667,11 +689,15 @@ fn draw_filled_background(
     area: genpdfi::render::Area<'_>,
     style: style::Style,
 ) {
+    if corner_radius <= 0.0 {
+        draw_square_background(color, total_width, total_height, area);
+        return;
+    }
     let w_f32: f32 = total_width.into();
     let h_f32: f32 = total_height.into();
     if !render_rounded_bg_on_area(w_f32, h_f32, corner_radius, color, context, area, style) {
-        // Fallback: image rendering failed, but area was consumed. No background drawn.
-        // This only happens if temp dir is unwritable or image encoding fails.
+        // Image rendering failed and the area is consumed, so no background is
+        // drawn. Only reachable if the temp dir is unwritable.
     }
 }
 
@@ -685,17 +711,7 @@ fn draw_filled_background(
     area: genpdfi::render::Area<'_>,
     _style: style::Style,
 ) {
-    let mid_y = total_height / 2.0;
-    let bg_style = style::LineStyle::new()
-        .with_thickness(total_height)
-        .with_color(color);
-    area.draw_line(
-        vec![
-            Position::new(Mm::from(0), mid_y),
-            Position::new(total_width, mid_y),
-        ],
-        bg_style,
-    );
+    draw_square_background(color, total_width, total_height, area);
 }
 
 /// Create a rounded-rect background image, save to temp file, load via genpdfi,
