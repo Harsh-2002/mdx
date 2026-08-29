@@ -1993,3 +1993,32 @@ fn test_export_pdf_italic_is_not_the_regular_face() {
         "italic text must not render as the regular face"
     );
 }
+
+/// Fonts were embedded whole, so every export carried ~2.8 MB of font data
+/// regardless of how little of it the document used.
+#[test]
+fn test_export_pdf_subsets_fonts() {
+    let Some(bytes) = export_pdf("subset", "# T\n\nHello world.\n") else {
+        return;
+    };
+    assert!(
+        bytes.len() < 600_000,
+        "a tiny document should not carry whole fonts, got {} bytes",
+        bytes.len()
+    );
+}
+
+/// Subsetting drops the font's cmap, and printpdf derives /ToUnicode from it,
+/// so without a replacement the PDF renders correctly but cannot be copied,
+/// searched or extracted.
+#[test]
+fn test_export_pdf_text_stays_extractable() {
+    let Some(bytes) = export_pdf("tounicode", "# T\n\nSphinx of black quartz.\n") else {
+        return;
+    };
+    let n = bytes
+        .windows(11)
+        .filter(|w| w.starts_with(b"beginbfchar"))
+        .count();
+    assert!(n > 0, "the PDF must carry a /ToUnicode map");
+}
