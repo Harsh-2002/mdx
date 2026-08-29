@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use comrak::nodes::{AlertType, AstNode, ListType, NodeValue};
 #[cfg(not(feature = "images"))]
@@ -189,70 +189,140 @@ fn font_search_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Find a usable font file by trying each candidate stem in turn.
+/// Every font file under the search dirs, lowercased name paired with its path.
 ///
-/// markdown2pdf's own lookup reads only the direct children of a few hardcoded
-/// directories, but Debian and Ubuntu store fonts one level down
-/// (`/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf`), so it finds nothing and
-/// every PDF export fails with "Could not find a font for built-in metrics" --
-/// on the GitHub ubuntu runners too. Walk recursively instead.
-fn find_font_file(candidates: &[&str]) -> Option<PathBuf> {
-    let dirs = font_search_dirs();
-    for stem in candidates {
-        let want: Vec<String> = ["ttf", "otf"]
-            .iter()
-            .map(|ext| format!("{}.{}", stem, ext).to_lowercase())
-            .collect();
-        for dir in &dirs {
-            if !dir.is_dir() {
+/// Debian and Ubuntu store fonts one level down
+/// (`/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf`), so a non-recursive
+/// lookup finds nothing and every PDF export fails -- on the GitHub ubuntu
+/// runners too. Walk instead, and collect once so matching is in memory.
+fn font_files() -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    for dir in font_search_dirs() {
+        if !dir.is_dir() {
+            continue;
+        }
+        for entry in walkdir::WalkDir::new(&dir)
+            .max_depth(4)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if !entry.file_type().is_file() {
                 continue;
             }
-            for entry in walkdir::WalkDir::new(dir)
-                .max_depth(4)
-                .follow_links(false)
-                .into_iter()
-                .filter_map(|e| e.ok())
-            {
-                if !entry.file_type().is_file() {
-                    continue;
-                }
-                let name = entry.file_name().to_string_lossy().to_lowercase();
-                // .ttc collections are not supported by the font parser.
-                if name.ends_with(".ttc") {
-                    continue;
-                }
-                if want.contains(&name) {
-                    return Some(entry.into_path());
-                }
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            // .ttc collections are not supported by the font parser.
+            if !(name.ends_with(".ttf") || name.ends_with(".otf")) {
+                continue;
             }
+            out.push((name, entry.into_path()));
+        }
+    }
+    out
+}
+
+/// Pick the best match, candidate order taking priority over directory order.
+fn pick_font(files: &[(String, PathBuf)], candidates: &[&str]) -> Option<PathBuf> {
+    for stem in candidates {
+        let stem = stem.to_lowercase();
+        for ext in ["ttf", "otf"] {
+            let want = format!("{}.{}", stem, ext);
+            if let Some((_, path)) = files.iter().find(|(name, _)| *name == want) {
+                return Some(path.clone());
+            }
+        }
+    }
+    // Then a prefix match, so "Arial" still finds "arialbd.ttf".
+    for stem in candidates {
+        let stem = stem.to_lowercase();
+        if let Some((_, path)) = files.iter().find(|(name, _)| name.starts_with(&stem)) {
+            return Some(path.clone());
         }
     }
     None
 }
 
-/// Load a PDF font family, preferring a real system font file.
-///
-/// Falls back to markdown2pdf's built-in metrics loader so macOS and Windows,
-/// where the hardcoded lookup does work, behave exactly as before.
+fn find_font_file(candidates: &[&str]) -> Option<PathBuf> {
+    pick_font(&font_files(), candidates)
+}
+
+/// Build a family from one font file, reused for every style.
+fn font_family_from_file(
+    path: &Path,
+) -> Result<genpdfi::fonts::FontFamily<genpdfi::fonts::FontData>, Box<dyn std::error::Error>> {
+    let data = std::sync::Arc::new(std::fs::read(path)?);
+    let regular = genpdfi::fonts::FontData::new_shared(data, None)?;
+    Ok(genpdfi::fonts::FontFamily {
+        bold: regular.clone(),
+        italic: regular.clone(),
+        bold_italic: regular.clone(),
+        regular,
+    })
+}
+
+/// The four base-14 styles for a family name.
+fn builtin_variants(name: &str) -> [printpdf::BuiltinFont; 4] {
+    use printpdf::BuiltinFont as B;
+    match name {
+        "Courier" => [
+            B::Courier,
+            B::CourierBold,
+            B::CourierOblique,
+            B::CourierBoldOblique,
+        ],
+        "Times" => [
+            B::TimesRoman,
+            B::TimesBold,
+            B::TimesItalic,
+            B::TimesBoldItalic,
+        ],
+        _ => [
+            B::Helvetica,
+            B::HelveticaBold,
+            B::HelveticaOblique,
+            B::HelveticaBoldOblique,
+        ],
+    }
+}
+
+/// Build a base-14 family. The glyphs come from the reader, but genpdfi still
+/// needs a real font on disk to measure with.
+fn font_family_builtin(
+    name: &str,
+    metrics: &Path,
+) -> Result<genpdfi::fonts::FontFamily<genpdfi::fonts::FontData>, Box<dyn std::error::Error>> {
+    let data = std::sync::Arc::new(std::fs::read(metrics)?);
+    let [regular, bold, italic, bold_italic] = builtin_variants(name);
+    Ok(genpdfi::fonts::FontFamily {
+        regular: genpdfi::fonts::FontData::new_shared(data.clone(), Some(regular))?,
+        bold: genpdfi::fonts::FontData::new_shared(data.clone(), Some(bold))?,
+        italic: genpdfi::fonts::FontData::new_shared(data.clone(), Some(italic))?,
+        bold_italic: genpdfi::fonts::FontData::new_shared(data, Some(bold_italic))?,
+    })
+}
+
+/// Load a PDF font family, preferring a real system font file and falling back
+/// to base-14 metrics taken from whatever font the host does have.
 fn load_pdf_font(
     candidates: &[&str],
     builtin: &str,
 ) -> Result<genpdfi::fonts::FontFamily<genpdfi::fonts::FontData>, Box<dyn std::error::Error>> {
     if let Some(path) = find_font_file(candidates)
-        && let Ok(family) =
-            markdown2pdf::fonts::load_font_family(markdown2pdf::fonts::FontSource::File(path))
+        && let Ok(family) = font_family_from_file(&path)
     {
         return Ok(family);
     }
-    markdown2pdf::fonts::load_builtin_font_family(builtin).map_err(|e| {
-        format!(
-            "Font error: {}. Searched for {:?} under {:?}.",
-            e,
-            candidates,
-            font_search_dirs()
-        )
-        .into()
-    })
+    if let Some((_, path)) = font_files().into_iter().next()
+        && let Ok(family) = font_family_builtin(builtin, &path)
+    {
+        return Ok(family);
+    }
+    Err(format!(
+        "Font error: no usable font found. Searched for {:?} under {:?}.",
+        candidates,
+        font_search_dirs()
+    )
+    .into())
 }
 
 const HEADING_SIZES: [u8; 6] = [24, 20, 16, 14, 12, 11];
@@ -298,7 +368,7 @@ fn fit_heading_size(doc: &genpdfi::Document, text: &str, size: u8) -> u8 {
 
 /// How many rule glyphs fit across the content width.
 ///
-/// This was a hardcoded `repeat(200)`. Under markdown2pdf's built-in Helvetica
+/// This was a hardcoded `repeat(200)`. Under the built-in Helvetica
 /// metrics that happened not to overflow, but a real embedded font reports true
 /// advance widths, and 200 box-drawing glyphs are far wider than the page. The
 /// string contains no spaces, so genpdfi has no break opportunity and the whole
@@ -2033,6 +2103,60 @@ fn extract_plain_text<'a>(root: &'a AstNode<'a>) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    fn files(names: &[&str]) -> Vec<(String, PathBuf)> {
+        names
+            .iter()
+            .map(|n| (n.to_lowercase(), PathBuf::from("/fonts").join(n)))
+            .collect()
+    }
+
+    #[test]
+    fn test_pick_font_prefers_candidate_order_over_listing_order() {
+        let f = files(&["Arial.ttf", "Helvetica.ttf"]);
+        let got = pick_font(&f, &["Helvetica", "Arial"]).unwrap();
+        assert_eq!(got, PathBuf::from("/fonts/Helvetica.ttf"));
+    }
+
+    #[test]
+    fn test_pick_font_is_case_insensitive_and_takes_ttf_before_otf() {
+        let f = files(&["DEJAVUSANS.OTF", "dejavusans.ttf"]);
+        let got = pick_font(&f, &["DejaVuSans"]).unwrap();
+        assert_eq!(got, PathBuf::from("/fonts/dejavusans.ttf"));
+    }
+
+    /// An exact match anywhere must beat a prefix match on an earlier candidate,
+    /// or "Arial" would claim "arialbd.ttf" while "Helvetica.ttf" sits unused.
+    #[test]
+    fn test_pick_font_exact_match_beats_prefix_match() {
+        let f = files(&["arialbd.ttf", "Helvetica.ttf"]);
+        let got = pick_font(&f, &["Arial", "Helvetica"]).unwrap();
+        assert_eq!(got, PathBuf::from("/fonts/Helvetica.ttf"));
+    }
+
+    #[test]
+    fn test_pick_font_falls_back_to_prefix() {
+        let f = files(&["arialbd.ttf"]);
+        assert_eq!(
+            pick_font(&f, &["Arial"]).unwrap(),
+            PathBuf::from("/fonts/arialbd.ttf")
+        );
+    }
+
+    #[test]
+    fn test_pick_font_returns_none_when_nothing_matches() {
+        assert!(pick_font(&files(&["comic.ttf"]), &["Helvetica"]).is_none());
+    }
+
+    #[test]
+    fn test_builtin_variants_map_to_their_own_family() {
+        use printpdf::BuiltinFont as B;
+        assert_eq!(builtin_variants("Courier")[0], B::Courier);
+        assert_eq!(builtin_variants("Courier")[1], B::CourierBold);
+        assert_eq!(builtin_variants("Times")[0], B::TimesRoman);
+        assert_eq!(builtin_variants("Helvetica")[3], B::HelveticaBoldOblique);
+        assert_eq!(builtin_variants("whatever")[0], B::Helvetica);
+    }
     use super::*;
 
     #[test]
