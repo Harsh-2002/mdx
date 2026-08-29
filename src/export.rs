@@ -283,18 +283,210 @@ fn style_variant(
     None
 }
 
+// ─── Deterministic font subsetting ────────────────────────────────────────────
+
+/// Characters `export_pdf` emits that never appear in the source markdown:
+/// the page header, list bullets, the alert rule and the footnote brackets.
+const PDF_LITERAL_CHARS: &str =
+    "Page 0123456789[]`\u{2022}\u{2502}\u{2500}\u{2014}\u{2026} .,:;-()";
+
+/// Every character the export can put on a page.
+///
+/// The raw source covers most of it, but comrak resolves entity references, so
+/// `&copy;` renders a `\u{a9}` that never appears in the source -- and a
+/// character missing here is pinned to .notdef and renders as an empty box.
+/// Union the source with the parsed text so neither can under-collect.
+fn document_charset<'a>(markdown: &str, root: &'a AstNode<'a>) -> std::collections::BTreeSet<char> {
+    let mut set: std::collections::BTreeSet<char> =
+        markdown.chars().filter(|c| !c.is_control()).collect();
+    for node in root.descendants() {
+        let data = node.data.borrow();
+        let mut take = |text: &str| set.extend(text.chars().filter(|c| !c.is_control()));
+        match &data.value {
+            NodeValue::Text(t) => take(t),
+            NodeValue::Code(c) => take(&c.literal),
+            NodeValue::CodeBlock(c) => take(&c.literal),
+            NodeValue::FootnoteReference(f) => take(&f.name),
+            NodeValue::FootnoteDefinition(f) => take(&f.name),
+            _ => {}
+        }
+    }
+    set.extend(PDF_LITERAL_CHARS.chars());
+    set
+}
+
+/// Subset `font_data` down to `chars`.
+///
+/// genpdfi ships `subsetting::subset_font_with_mapping`, but it walks a
+/// `HashSet<char>`, so the glyph order -- and with it the font bytes and every
+/// glyph id in the content stream -- changes on every run. Driving `subsetter`
+/// from a sorted set makes the output reproducible.
+fn subset_font(
+    font_data: &[u8],
+    chars: &std::collections::BTreeSet<char>,
+) -> Option<(Vec<u8>, genpdfi::fonts::GlyphIdMap)> {
+    use std::collections::BTreeSet;
+
+    let face = ttf_parser::Face::parse(font_data, 0).ok()?;
+    let pairs: Vec<(char, u16)> = chars
+        .iter()
+        .filter_map(|&c| face.glyph_index(c).map(|g| (c, g.0)))
+        .collect();
+    if pairs.is_empty() {
+        return None;
+    }
+    let gids: Vec<u16> = pairs
+        .iter()
+        .map(|(_, g)| *g)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let remapper = subsetter::GlyphRemapper::new_from_glyphs_sorted(&gids);
+    let data = subsetter::subset(font_data, 0, &remapper).ok()?;
+
+    let mut map = genpdfi::fonts::GlyphIdMap::new();
+    // genpdfi falls back to the *original* glyph id for any character the map
+    // does not cover (fonts.rs:1037), which is out of range in a subset font.
+    // Pin everything the face knows to .notdef, then overwrite what we kept.
+    if let Some(cmap) = face.tables().cmap {
+        for sub in cmap.subtables.into_iter().filter(|s| s.is_unicode()) {
+            sub.codepoints(|cp| {
+                if let Some(c) = char::from_u32(cp) {
+                    map.insert(c, 0);
+                }
+            });
+        }
+    }
+    let mut kept = Vec::with_capacity(pairs.len());
+    for (c, gid) in pairs {
+        let new = remapper.get(gid)?;
+        map.insert(c, new);
+        kept.push((c, new));
+    }
+    Some((inject_cmap(&data, &kept).unwrap_or(data), map))
+}
+
+/// subsetter drops the `cmap` table, but printpdf derives the PDF `/ToUnicode`
+/// map from the cmap of the bytes it embeds -- without one, nothing in the
+/// document can be copied, searched or extracted. Splice a format 12 cmap back
+/// in over the subset glyph ids. `pairs` must be sorted by character.
+fn inject_cmap(font: &[u8], pairs: &[(char, u16)]) -> Option<Vec<u8>> {
+    let mut groups: Vec<(u32, u32, u32)> = Vec::new();
+    for &(c, g) in pairs {
+        let (c, g) = (c as u32, g as u32);
+        match groups.last_mut() {
+            Some(l) if l.1 + 1 == c && l.2 + (l.1 - l.0) + 1 == g => l.1 = c,
+            _ => groups.push((c, c, g)),
+        }
+    }
+    let sub_len = 16 + 12 * groups.len();
+    let mut table = Vec::with_capacity(12 + sub_len);
+    table.extend_from_slice(&0u16.to_be_bytes()); // version
+    table.extend_from_slice(&1u16.to_be_bytes()); // numTables
+    table.extend_from_slice(&3u16.to_be_bytes()); // Windows
+    table.extend_from_slice(&10u16.to_be_bytes()); // full repertoire
+    table.extend_from_slice(&12u32.to_be_bytes()); // subtable offset
+    table.extend_from_slice(&12u16.to_be_bytes()); // format 12
+    table.extend_from_slice(&0u16.to_be_bytes());
+    table.extend_from_slice(&(sub_len as u32).to_be_bytes());
+    table.extend_from_slice(&0u32.to_be_bytes()); // language
+    table.extend_from_slice(&(groups.len() as u32).to_be_bytes());
+    for (start, end, gid) in groups {
+        table.extend_from_slice(&start.to_be_bytes());
+        table.extend_from_slice(&end.to_be_bytes());
+        table.extend_from_slice(&gid.to_be_bytes());
+    }
+
+    let sfnt = u32::from_be_bytes(font.get(0..4)?.try_into().ok()?);
+    let num = u16::from_be_bytes(font.get(4..6)?.try_into().ok()?) as usize;
+    let mut tables: Vec<([u8; 4], Vec<u8>)> = Vec::with_capacity(num + 1);
+    for i in 0..num {
+        let r = 12 + i * 16;
+        let tag: [u8; 4] = font.get(r..r + 4)?.try_into().ok()?;
+        if &tag == b"cmap" {
+            continue;
+        }
+        let off = u32::from_be_bytes(font.get(r + 8..r + 12)?.try_into().ok()?) as usize;
+        let len = u32::from_be_bytes(font.get(r + 12..r + 16)?.try_into().ok()?) as usize;
+        tables.push((tag, font.get(off..off + len)?.to_vec()));
+    }
+    tables.push((*b"cmap", table));
+    tables.sort_by_key(|(t, _)| *t);
+
+    let n = tables.len() as u16;
+    let entry_selector = 15u16.saturating_sub(n.leading_zeros() as u16);
+    let search_range = (1u16 << entry_selector) * 16;
+    let mut out = Vec::with_capacity(font.len() + sub_len + 64);
+    out.extend_from_slice(&sfnt.to_be_bytes());
+    out.extend_from_slice(&n.to_be_bytes());
+    out.extend_from_slice(&search_range.to_be_bytes());
+    out.extend_from_slice(&entry_selector.to_be_bytes());
+    out.extend_from_slice(&(n * 16 - search_range).to_be_bytes());
+    let mut offset = 12 + tables.len() * 16;
+    let mut records = Vec::new();
+    for (tag, data) in &tables {
+        records.push((*tag, sfnt_checksum(data), offset as u32, data.len() as u32));
+        offset += (data.len() + 3) & !3;
+    }
+    for (tag, sum, off, len) in &records {
+        out.extend_from_slice(tag);
+        out.extend_from_slice(&sum.to_be_bytes());
+        out.extend_from_slice(&off.to_be_bytes());
+        out.extend_from_slice(&len.to_be_bytes());
+    }
+    for (_, data) in &tables {
+        out.extend_from_slice(data);
+        while out.len() % 4 != 0 {
+            out.push(0);
+        }
+    }
+    if let Some(i) = records.iter().position(|(t, ..)| t == b"head") {
+        let head = records[i].2 as usize;
+        out.get_mut(head + 8..head + 12)?
+            .copy_from_slice(&0u32.to_be_bytes());
+        let adj = 0xB1B0_AFBAu32.wrapping_sub(sfnt_checksum(&out));
+        out.get_mut(head + 8..head + 12)?
+            .copy_from_slice(&adj.to_be_bytes());
+    }
+    Some(out)
+}
+
+fn sfnt_checksum(data: &[u8]) -> u32 {
+    let mut sum = 0u32;
+    let mut chunks = data.chunks_exact(4);
+    for c in &mut chunks {
+        sum = sum.wrapping_add(u32::from_be_bytes(c.try_into().unwrap()));
+    }
+    let rem = chunks.remainder();
+    if !rem.is_empty() {
+        let mut buf = [0u8; 4];
+        buf[..rem.len()].copy_from_slice(rem);
+        sum = sum.wrapping_add(u32::from_be_bytes(buf));
+    }
+    sum
+}
+
 /// Build a family from a regular font file, picking up its bold and italic
 /// siblings. Without them every style resolves to the same face, so `**bold**`
 /// and `*italic*` render identically to body text.
 fn font_family(
     files: &[(String, PathBuf)],
     regular: &Path,
+    charset: &std::collections::BTreeSet<char>,
 ) -> Result<genpdfi::fonts::FontFamily<genpdfi::fonts::FontData>, Box<dyn std::error::Error>> {
-    let load = |path: &Path| -> Option<genpdfi::fonts::FontData> {
-        let data = std::fs::read(path).ok()?;
-        genpdfi::fonts::FontData::new(data, None).ok()
+    let embed = |data: Vec<u8>| -> Result<genpdfi::fonts::FontData, Box<dyn std::error::Error>> {
+        match subset_font(&data, charset) {
+            Some((sub, map)) => Ok(genpdfi::fonts::FontData::new_with_subset(
+                std::sync::Arc::new(data),
+                std::sync::Arc::new(sub),
+                map,
+            )?),
+            None => Ok(genpdfi::fonts::FontData::new(data, None)?),
+        }
     };
-    let base = genpdfi::fonts::FontData::new(std::fs::read(regular)?, None)?;
+    let load =
+        |path: &Path| -> Option<genpdfi::fonts::FontData> { embed(std::fs::read(path).ok()?).ok() };
+    let base = embed(std::fs::read(regular)?)?;
     let pick = |suffixes: &[&str]| {
         style_variant(files, regular, suffixes)
             .and_then(|p| load(&p))
@@ -315,15 +507,16 @@ fn font_family(
 /// with an arbitrary font's metrics mismeasures every line.
 fn load_pdf_font(
     candidates: &[&str],
+    charset: &std::collections::BTreeSet<char>,
 ) -> Result<genpdfi::fonts::FontFamily<genpdfi::fonts::FontData>, Box<dyn std::error::Error>> {
     let files = font_files();
     if let Some(path) = pick_font(&files, candidates)
-        && let Ok(family) = font_family(&files, &path)
+        && let Ok(family) = font_family(&files, &path, charset)
     {
         return Ok(family);
     }
     for (_, path) in &files {
-        if let Ok(family) = font_family(&files, path) {
+        if let Ok(family) = font_family(&files, path, charset) {
             return Ok(family);
         }
     }
@@ -879,11 +1072,12 @@ pub fn export_pdf(
     let arena = typed_arena::Arena::new();
     let root = parse_markdown(&arena, markdown);
 
-    let font = load_pdf_font(SANS_CANDIDATES)?;
+    let charset = document_charset(markdown, root);
+    let font = load_pdf_font(SANS_CANDIDATES, &charset)?;
     let mut doc = genpdfi::Document::new(font);
 
     // Monospace family for code blocks.
-    let courier = load_pdf_font(MONO_CANDIDATES)?;
+    let courier = load_pdf_font(MONO_CANDIDATES, &charset)?;
     let courier_ref = doc.add_font_family(courier);
 
     let title = extract_title(root).unwrap_or_else(|| "document".to_string());
@@ -2197,6 +2391,123 @@ mod tests {
         let f = files(&["DejaVuSans.ttf"]);
         let reg = PathBuf::from("/fonts/DejaVuSans.ttf");
         assert!(style_variant(&f, &reg, BOLD_SUFFIXES).is_none());
+    }
+
+    /// The injected cmap is hand-built binary; re-parse it and confirm every
+    /// character resolves to the subset glyph id the map claims.
+    #[test]
+    fn test_inject_cmap_round_trips() {
+        let files = font_files();
+        let otf = files
+            .iter()
+            .find(|(name, _)| name.ends_with(".otf"))
+            .map(|(_, p)| p.clone());
+        let mut checked = 0;
+        for path in [pick_font(&files, SANS_CANDIDATES), otf]
+            .into_iter()
+            .flatten()
+        {
+            let data = std::fs::read(&path).unwrap();
+            let charset: std::collections::BTreeSet<char> =
+                "Hello, world! 0123456789 café \u{2014}\u{2022}\u{a9}"
+                    .chars()
+                    .collect();
+            let Some((subset, map)) = subset_font(&data, &charset) else {
+                continue;
+            };
+            let face = ttf_parser::Face::parse(&subset, 0).expect("subset must re-parse");
+            for c in &charset {
+                let Some(want) = map.get(*c) else { continue };
+                if want == 0 {
+                    continue;
+                }
+                assert_eq!(
+                    face.glyph_index(*c).map(|g| g.0),
+                    Some(want),
+                    "cmap lookup for {:?} must match the map in {:?}",
+                    c,
+                    path
+                );
+            }
+            checked += 1;
+        }
+        if checked == 0 {
+            eprintln!("skipping: no usable system font");
+        }
+    }
+
+    /// A glyph id past the end of the subset would draw garbage.
+    #[test]
+    fn test_subset_glyph_ids_are_in_range() {
+        let Some(path) = pick_font(&font_files(), SANS_CANDIDATES) else {
+            return;
+        };
+        let data = std::fs::read(&path).unwrap();
+        let charset: std::collections::BTreeSet<char> = "abcXYZ 123".chars().collect();
+        let (subset, map) = subset_font(&data, &charset).unwrap();
+        let n = ttf_parser::Face::parse(&subset, 0)
+            .unwrap()
+            .number_of_glyphs();
+        for c in &charset {
+            if let Some(g) = map.get(*c) {
+                assert!(
+                    g < n,
+                    "glyph {} for {:?} is past the subset's {} glyphs",
+                    g,
+                    c,
+                    n
+                );
+            }
+        }
+    }
+
+    /// Characters absent from the document must be pinned to .notdef, never to
+    /// their original id -- genpdfi falls back to the original otherwise.
+    #[test]
+    fn test_characters_outside_the_document_map_to_notdef() {
+        let Some(path) = pick_font(&font_files(), SANS_CANDIDATES) else {
+            return;
+        };
+        let data = std::fs::read(&path).unwrap();
+        let charset: std::collections::BTreeSet<char> = "abc".chars().collect();
+        let (_, map) = subset_font(&data, &charset).unwrap();
+        assert_eq!(
+            map.get('Z'),
+            Some(0),
+            "an uncollected character must be .notdef"
+        );
+    }
+
+    /// Subsetting must be reproducible: same input, same bytes, every run.
+    #[test]
+    fn test_subsetting_is_deterministic() {
+        let Some(path) = pick_font(&font_files(), SANS_CANDIDATES) else {
+            return;
+        };
+        let data = std::fs::read(&path).unwrap();
+        let charset: std::collections::BTreeSet<char> =
+            "The quick brown fox 0123456789".chars().collect();
+        let first = subset_font(&data, &charset).unwrap().0;
+        for _ in 0..4 {
+            assert_eq!(
+                subset_font(&data, &charset).unwrap().0,
+                first,
+                "subset bytes must not vary between runs"
+            );
+        }
+    }
+
+    /// comrak resolves entity references, so the rendered character is not in
+    /// the source. Missing it would render an empty box.
+    #[test]
+    fn test_charset_covers_entity_references() {
+        let arena = typed_arena::Arena::new();
+        let md = "Copyright &copy; and &mdash; and &rarr;\n";
+        let root = parse_markdown(&arena, md);
+        let set = document_charset(md, root);
+        for c in ['\u{a9}', '\u{2014}', '\u{2192}'] {
+            assert!(set.contains(&c), "charset must contain {:?}", c);
+        }
     }
 
     #[test]

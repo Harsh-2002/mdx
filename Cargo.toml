@@ -44,6 +44,8 @@ rayon = "1.10"
 walkdir = "2"
 
 genpdfi = { version = "0.2", features = ["images"] }
+subsetter = "0.2.3"
+ttf-parser = "0.24"
 epub-builder = { version = "0.8", default-features = false, features = ["zip-library"] }
 
 [features]
