@@ -2022,3 +2022,30 @@ fn test_export_pdf_text_stays_extractable() {
         .count();
     assert!(n > 0, "the PDF must carry a /ToUnicode map");
 }
+
+/// printpdf serialized image XObjects and link annotations out of HashMaps, so
+/// exporting the same document twice produced different bytes. vendor/printpdf
+/// fixes both; this guards against the vendored patch being lost in an upgrade.
+/// The fixture needs images (a code block and a table each mint a background
+/// XObject) and a link to cover both paths, and the runs must straddle a second
+/// so a wall-clock CreationDate would show up too.
+#[test]
+fn test_export_pdf_is_reproducible() {
+    let md = "# R\n\nSee [the docs](https://example.com/a) and [more](https://example.com/b).\n\n              ```rust\nfn a() {}\n```\n\n| x | y |\n|---|---|\n| 1 | 2 |\n\n              ```rust\nfn b() {}\n```\n";
+    let Some(first) = export_pdf("repro1", md) else {
+        return;
+    };
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let Some(second) = export_pdf("repro2", md) else {
+        return;
+    };
+    assert_eq!(
+        first.len(),
+        second.len(),
+        "two exports of the same document must be the same size"
+    );
+    assert!(
+        first == second,
+        "two exports of the same document must be byte-identical"
+    );
+}

@@ -44,6 +44,7 @@ rayon = "1.10"
 walkdir = "2"
 
 genpdfi = { version = "0.2", features = ["images"] }
+time = "0.3"
 subsetter = "0.2.3"
 ttf-parser = "0.24"
 epub-builder = { version = "0.8", default-features = false, features = ["zip-library"] }
@@ -67,3 +68,9 @@ opt-level = "z"
 lto = true
 strip = true
 panic = "abort"
+
+# printpdf 0.7 serialized image XObjects from a HashMap, so identical input
+# produced different bytes each run. Reached transitively via genpdfi, which
+# pins 0.7 -- see vendor/README.md.
+[patch.crates-io]
+printpdf = { path = "vendor/printpdf" }
