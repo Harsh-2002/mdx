@@ -527,6 +527,14 @@ fn load_pdf_font(
     .into())
 }
 
+/// What the panel corners are painted with.
+///
+/// genpdfi rejects images carrying an alpha channel, so a rounded panel cannot
+/// be transparent outside its arc -- the corners have to be filled with
+/// whatever sits behind them. PDF pages have no background of their own here,
+/// so that is the paper. If PDF export grows a theme, this moves with it.
+const PAGE_BACKGROUND: [u8; 3] = [255, 255, 255];
+
 const HEADING_SIZES: [u8; 6] = [24, 20, 16, 14, 12, 11];
 
 /// Width of the A4 content area in mm (210mm page, 15mm side margins).
@@ -740,59 +748,65 @@ fn render_rounded_bg_on_area(
         _ => (243, 244, 248),
     };
 
-    let mut img = image::RgbImage::from_pixel(px_w, px_h, image::Rgb([255, 255, 255]));
+    let mut img = image::RgbImage::from_pixel(px_w, px_h, image::Rgb(PAGE_BACKGROUND));
 
-    if r > 0 {
-        // Corner centers: inset by r from each edge
-        let cx_left = r;
-        let cx_right = px_w.saturating_sub(r);
-        let cy_top = r;
-        let cy_bottom = px_h.saturating_sub(r);
-        let r_sq = r * r;
-
-        for y in 0..px_h {
-            for x in 0..px_w {
-                let inside = if x < cx_left && y < cy_top {
-                    // Top-left corner
-                    let dx = cx_left - x;
-                    let dy = cy_top - y;
-                    dx * dx + dy * dy <= r_sq
-                } else if x >= cx_right && y < cy_top {
-                    // Top-right corner
-                    let dx = x - cx_right;
-                    let dy = cy_top - y;
-                    dx * dx + dy * dy <= r_sq
-                } else if x < cx_left && y >= cy_bottom {
-                    // Bottom-left corner
-                    let dx = cx_left - x;
-                    let dy = y - cy_bottom;
-                    dx * dx + dy * dy <= r_sq
-                } else if x >= cx_right && y >= cy_bottom {
-                    // Bottom-right corner
-                    let dx = x - cx_right;
-                    let dy = y - cy_bottom;
-                    dx * dx + dy * dy <= r_sq
-                } else {
-                    true
-                };
-
-                if inside {
-                    img.put_pixel(x, y, image::Rgb([cr, cg, cb]));
-                }
+    let r = r as f32;
+    let (cx_left, cx_right) = (r, px_w as f32 - r);
+    let (cy_top, cy_bottom) = (r, px_h as f32 - r);
+    for y in 0..px_h {
+        for x in 0..px_w {
+            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+            // Distance from the arc centre of whichever corner this pixel sits
+            // in; a pixel outside every corner box is solid panel.
+            let dx = if fx < cx_left {
+                cx_left - fx
+            } else if fx > cx_right {
+                fx - cx_right
+            } else {
+                0.0
+            };
+            let dy = if fy < cy_top {
+                cy_top - fy
+            } else if fy > cy_bottom {
+                fy - cy_bottom
+            } else {
+                0.0
+            };
+            // Blend across the last pixel of the arc. The old hard threshold
+            // quantised the curve into visible steps, which the viewer then
+            // smooth-scaled -- soft and jagged at once.
+            let coverage = if dx == 0.0 || dy == 0.0 {
+                1.0
+            } else {
+                (r + 0.5 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0)
+            };
+            if coverage <= 0.0 {
+                continue;
             }
-        }
-    } else {
-        // No rounding needed — fill entire image
-        for y in 0..px_h {
-            for x in 0..px_w {
-                img.put_pixel(x, y, image::Rgb([cr, cg, cb]));
-            }
+            let blend = |ground: u8, fill: u8| {
+                (ground as f32 + (fill as f32 - ground as f32) * coverage).round() as u8
+            };
+            img.put_pixel(
+                x,
+                y,
+                image::Rgb([
+                    blend(PAGE_BACKGROUND[0], cr),
+                    blend(PAGE_BACKGROUND[1], cg),
+                    blend(PAGE_BACKGROUND[2], cb),
+                ]),
+            );
         }
     }
 
     // Save as PNG (lossless — avoids JPEG compression artifacts on solid colors).
     // Use PID in filename to avoid race conditions with concurrent exports.
-    let temp_path = std::env::temp_dir().join(format!("md-pdf-code-bg-{}.png", std::process::id()));
+    // One name per panel: a PID-only name is shared by every panel in the
+    // document, so two threads would delete each other's file mid-render and
+    // the background would silently vanish.
+    static PANEL_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = PANEL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp_path =
+        std::env::temp_dir().join(format!("md-pdf-code-bg-{}-{}.png", std::process::id(), seq));
     if img.save(&temp_path).is_err() {
         return false;
     }
