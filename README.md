@@ -112,7 +112,7 @@ mdx fetch --json --max-tokens 4000 URL | jq '{tokens, truncated, warnings}'
 
 `-o` writes to a file in every format. Without it, HTML, JSON and TXT print to stdout while PDF and EPUB default to the input name with a new extension.
 
-HTML output is a single file, but math and mermaid load KaTeX and mermaid.js from a CDN, so those two need a network connection to display. EPUB embeds local images, splits chapters on headings, and maps front matter to metadata. PDF renders mermaid with a local [mmdc](https://github.com/mermaid-js/mermaid-cli); without it the diagram is written in as a labelled source block and the export still succeeds. `--allow-remote-render` falls back to the kroki.io web API instead, which uploads your diagram source to a third party — so it is off by default.
+HTML output is a single file, but math and mermaid load KaTeX and mermaid.js from a CDN, so those two need a network connection to display. PDF output is byte-reproducible: exporting the same document twice gives the same file, and `SOURCE_DATE_EPOCH` sets the embedded timestamp. EPUB embeds local images, splits chapters on headings, and maps front matter to metadata. PDF renders mermaid with a local [mmdc](https://github.com/mermaid-js/mermaid-cli); without it the diagram is written in as a labelled source block and the export still succeeds. `--allow-remote-render` falls back to the kroki.io web API instead, which uploads your diagram source to a third party — so it is off by default.
 
 ## Markdown support
 
