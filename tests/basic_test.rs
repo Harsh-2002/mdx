@@ -1950,9 +1950,11 @@ fn test_export_pdf_handles_non_ascii() {
     assert_eq!(&bytes[0..4], b"%PDF");
 }
 
-/// Code blocks and tables are rasterized, so they exercise the image path.
+/// Code block and table panels are drawn as filled paths. They used to be
+/// rasterized: a flat colour PNG per panel, written to a temp file, decoded and
+/// embedded as an image XObject.
 #[test]
-fn test_export_pdf_renders_code_and_tables() {
+fn test_export_pdf_panels_are_not_rasterized() {
     let Some(bytes) = export_pdf(
         "codetable",
         "```rust\nfn main() {}\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n",
@@ -1960,9 +1962,10 @@ fn test_export_pdf_renders_code_and_tables() {
         return;
     };
     assert!(
-        bytes.windows(14).any(|w| w.starts_with(b"/Subtype/Image")),
-        "code block and table should render"
+        !bytes.windows(14).any(|w| w.starts_with(b"/Subtype/Image")),
+        "code blocks and tables should embed no images"
     );
+    assert!(bytes.len() > 1000, "the page should still have content");
 }
 
 /// Every .bold() call in export.rs -- inline bold, headings, table headers,

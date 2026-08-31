@@ -527,14 +527,6 @@ fn load_pdf_font(
     .into())
 }
 
-/// What the panel corners are painted with.
-///
-/// genpdfi rejects images carrying an alpha channel, so a rounded panel cannot
-/// be transparent outside its arc -- the corners have to be filled with
-/// whatever sits behind them. PDF pages have no background of their own here,
-/// so that is the paper. If PDF export grows a theme, this moves with it.
-const PAGE_BACKGROUND: [u8; 3] = [255, 255, 255];
-
 const HEADING_SIZES: [u8; 6] = [24, 20, 16, 14, 12, 11];
 
 /// Width of the A4 content area in mm (210mm page, 15mm side margins).
@@ -650,9 +642,7 @@ impl<E: Element> Element for FilledElement<E> {
             total_width,
             total_height,
             self.corner_radius,
-            context,
             area,
-            style,
         );
 
         result.size.width = total_width;
@@ -662,165 +652,65 @@ impl<E: Element> Element for FilledElement<E> {
     }
 }
 
-/// Fill a square-cornered rectangle with one stroked line.
+/// Fill a panel behind content, with optionally rounded corners.
 ///
-/// A horizontal line of thickness `h` with the PDF default butt cap paints
-/// exactly its bounding box, so this is pixel-exact -- and it costs one
-/// operator against a PNG encode, a temp file and an embedded XObject.
-fn draw_square_background(
-    color: style::Color,
-    width: Mm,
-    height: Mm,
-    area: genpdfi::render::Area<'_>,
-) {
-    let mid_y = height / 2.0;
-    area.draw_line(
-        vec![
-            Position::new(Mm::from(0), mid_y),
-            Position::new(width, mid_y),
-        ],
-        style::LineStyle::new()
-            .with_thickness(height)
-            .with_color(color),
-    );
-}
-
-/// Draw a filled background behind content. Rounded corners need a raster
-/// image; square ones are drawn directly.
-#[cfg(feature = "images")]
+/// This used to rasterize a PNG through a temp file for every panel: a flat
+/// colour drawn at 144 DPI, with corners hard-thresholded into visible steps
+/// that viewers then smooth-scaled. As a path it is exact at any zoom, needs
+/// no temp file and no image XObject, and -- since genpdfi rejects images
+/// carrying alpha -- no longer has to paint its corners opaque to fake
+/// transparency against the page.
 fn draw_filled_background(
     color: style::Color,
     total_width: Mm,
     total_height: Mm,
     corner_radius: f32,
-    context: &genpdfi::Context,
     area: genpdfi::render::Area<'_>,
-    style: style::Style,
 ) {
-    if corner_radius <= 0.0 {
-        draw_square_background(color, total_width, total_height, area);
+    let (w, h): (f32, f32) = (total_width.into(), total_height.into());
+    let r = corner_radius.min(w / 2.0).min(h / 2.0).max(0.0);
+    let at = |x: f32, y: f32| Position::new(Mm::from(x), Mm::from(y));
+
+    if r <= 0.0 {
+        area.fill_polygon(
+            [
+                (at(0.0, 0.0), false),
+                (at(w, 0.0), false),
+                (at(w, h), false),
+                (at(0.0, h), false),
+            ],
+            color,
+        );
         return;
     }
-    let w_f32: f32 = total_width.into();
-    let h_f32: f32 = total_height.into();
-    if !render_rounded_bg_on_area(w_f32, h_f32, corner_radius, color, context, area, style) {
-        // Image rendering failed and the area is consumed, so no background is
-        // drawn. Only reachable if the temp dir is unwritable.
-    }
-}
 
-#[cfg(not(feature = "images"))]
-fn draw_filled_background(
-    color: style::Color,
-    total_width: Mm,
-    total_height: Mm,
-    _corner_radius: f32,
-    _context: &genpdfi::Context,
-    area: genpdfi::render::Area<'_>,
-    _style: style::Style,
-) {
-    draw_square_background(color, total_width, total_height, area);
-}
-
-/// Create a rounded-rect background image, save to temp file, load via genpdfi,
-/// and render it on the given area. Returns true on success.
-/// Uses temp file to bridge image 0.25 (our crate) → image 0.24 (genpdfi's crate).
-#[cfg(feature = "images")]
-fn render_rounded_bg_on_area(
-    width_mm: f32,
-    height_mm: f32,
-    radius_mm: f32,
-    color: style::Color,
-    context: &genpdfi::Context,
-    area: genpdfi::render::Area<'_>,
-    pdf_style: style::Style,
-) -> bool {
-    let dpi = 144.0_f32;
-    let px_w = (width_mm * dpi / 25.4).round().max(1.0) as u32;
-    let px_h = (height_mm * dpi / 25.4).round().max(1.0) as u32;
-    // Clamp radius so it never exceeds half the smaller dimension
-    let r = ((radius_mm * dpi / 25.4).round() as u32)
-        .min(px_w / 2)
-        .min(px_h / 2);
-
-    let (cr, cg, cb) = match color {
-        style::Color::Rgb(r, g, b) => (r, g, b),
-        _ => (243, 244, 248),
-    };
-
-    let mut img = image::RgbImage::from_pixel(px_w, px_h, image::Rgb(PAGE_BACKGROUND));
-
-    let r = r as f32;
-    let (cx_left, cx_right) = (r, px_w as f32 - r);
-    let (cy_top, cy_bottom) = (r, px_h as f32 - r);
-    for y in 0..px_h {
-        for x in 0..px_w {
-            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
-            // Distance from the arc centre of whichever corner this pixel sits
-            // in; a pixel outside every corner box is solid panel.
-            let dx = if fx < cx_left {
-                cx_left - fx
-            } else if fx > cx_right {
-                fx - cx_right
-            } else {
-                0.0
-            };
-            let dy = if fy < cy_top {
-                cy_top - fy
-            } else if fy > cy_bottom {
-                fy - cy_bottom
-            } else {
-                0.0
-            };
-            // Blend across the last pixel of the arc. The old hard threshold
-            // quantised the curve into visible steps, which the viewer then
-            // smooth-scaled -- soft and jagged at once.
-            let coverage = if dx == 0.0 || dy == 0.0 {
-                1.0
-            } else {
-                (r + 0.5 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0)
-            };
-            if coverage <= 0.0 {
-                continue;
-            }
-            let blend = |ground: u8, fill: u8| {
-                (ground as f32 + (fill as f32 - ground as f32) * coverage).round() as u8
-            };
-            img.put_pixel(
-                x,
-                y,
-                image::Rgb([
-                    blend(PAGE_BACKGROUND[0], cr),
-                    blend(PAGE_BACKGROUND[1], cg),
-                    blend(PAGE_BACKGROUND[2], cb),
-                ]),
-            );
-        }
-    }
-
-    // Save as PNG (lossless — avoids JPEG compression artifacts on solid colors).
-    // Use PID in filename to avoid race conditions with concurrent exports.
-    // One name per panel: a PID-only name is shared by every panel in the
-    // document, so two threads would delete each other's file mid-render and
-    // the background would silently vanish.
-    static PANEL_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let seq = PANEL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let temp_path =
-        std::env::temp_dir().join(format!("md-pdf-code-bg-{}-{}.png", std::process::id(), seq));
-    if img.save(&temp_path).is_err() {
-        return false;
-    }
-
-    let ok = if let Ok(mut bg_element) = elements::Image::from_path(&temp_path) {
-        bg_element.set_dpi(dpi);
-        let _ = bg_element.render(context, area, pdf_style);
-        true
-    } else {
-        false
-    };
-
-    let _ = std::fs::remove_file(&temp_path);
-    ok
+    // Distance from an arc's endpoint to its control point for a circular
+    // quarter-arc in cubic Bézier form.
+    let k = r * 0.552_284_8;
+    // printpdf reads a curve as four consecutive entries, and takes the pair
+    // marked true as its start and first control point.
+    area.fill_polygon(
+        [
+            (at(r, 0.0), false),
+            (at(w - r, 0.0), true),
+            (at(w - r + k, 0.0), true),
+            (at(w, r - k), false),
+            (at(w, r), false),
+            (at(w, h - r), true),
+            (at(w, h - r + k), true),
+            (at(w - r + k, h), false),
+            (at(w - r, h), false),
+            (at(r, h), true),
+            (at(r - k, h), true),
+            (at(0.0, h - r + k), false),
+            (at(0.0, h - r), false),
+            (at(0.0, r), true),
+            (at(0.0, r - k), true),
+            (at(r - k, 0.0), false),
+            (at(r, 0.0), false),
+        ],
+        color,
+    );
 }
 
 /// Walk the AST to find the first H1 heading's text for use as document title.

@@ -74,3 +74,4 @@ panic = "abort"
 # pins 0.7 -- see vendor/README.md.
 [patch.crates-io]
 printpdf = { path = "vendor/printpdf" }
+genpdfi = { path = "vendor/genpdfi" }
