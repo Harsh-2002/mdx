@@ -451,12 +451,10 @@ fn inject_cmap(font: &[u8], pairs: &[(char, u16)]) -> Option<Vec<u8>> {
 }
 
 fn sfnt_checksum(data: &[u8]) -> u32 {
-    let mut sum = 0u32;
-    let mut chunks = data.chunks_exact(4);
-    for c in &mut chunks {
-        sum = sum.wrapping_add(u32::from_be_bytes(c.try_into().unwrap()));
-    }
-    let rem = chunks.remainder();
+    let (chunks, rem) = data.as_chunks::<4>();
+    let mut sum = chunks
+        .iter()
+        .fold(0u32, |sum, c| sum.wrapping_add(u32::from_be_bytes(*c)));
     if !rem.is_empty() {
         let mut buf = [0u8; 4];
         buf[..rem.len()].copy_from_slice(rem);
