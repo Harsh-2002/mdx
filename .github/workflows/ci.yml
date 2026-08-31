@@ -1,12 +1,16 @@
 name: CI
 
+# A branch in this repo fires push AND pull_request, which ran the whole
+# five-job matrix twice per PR. Deduping by concurrency instead just cancels
+# one of them, and a cancelled job still reports as failed. Only watch main
+# directly; everything else is covered by its pull request.
 on:
   push:
+    branches: [main]
   pull_request:
 
-# A PR from a branch in this repo fires both events; keep only the newest run.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
