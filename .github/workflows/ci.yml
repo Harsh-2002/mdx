@@ -4,9 +4,12 @@ on:
   push:
   pull_request:
 
-# A PR from a branch in this repo fires both events; keep only the newest run.
+# A PR from a branch in this repo fires both push and pull_request. Both must
+# land in the same group to dedupe, so use ref_name -- github.ref is
+# "refs/heads/x" while head_ref is bare "x", which put them in separate groups
+# and ran the whole matrix twice.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
