@@ -46,3 +46,30 @@ then be deleted outright.
 
 Only the files reachable from the build are kept: `src/`, `LICENSE`, and the
 four assets referenced by `include_str!`/`include_bytes!`.
+
+# vendor/genpdfi
+
+genpdfi 0.2.7, unmodified except for one added primitive. Apache-2.0 OR MIT —
+see `genpdfi/LICENSES/`.
+
+`Area` exposed `draw_line`, a *stroked* polyline, and nothing that fills a
+path. `Area.layer` is private with no accessor and `Context` carries only the
+font cache, so an `Element` had no way to reach printpdf's drawing API — which
+does support filled Bézier paths. That left mdx rasterizing every code block
+and table background: a flat-colour PNG per panel, written to a temp file,
+decoded and embedded as an image XObject.
+
+Added `Area::fill_polygon` plus the `Layer::add_filled_shape` it calls, both
+modelled directly on the existing `draw_line`/`add_line_shape` pair and going
+through the same private `position()`/`transform_position()` mapping. They emit
+`printpdf::Polygon { mode: PaintMode::Fill }`.
+
+## Why vendored rather than upstreamed
+
+genpdfi's repository is **archived** — no issues, no releases. There is
+nowhere to send this.
+
+Revisit if a maintained genpdf-family crate appears; `fill_polygon` is a
+generic addition that would be worth offering upstream if one does.
+
+Only `src/`, `Cargo.toml`, `README.md` and `LICENSES/` are kept.
