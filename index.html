@@ -494,6 +494,8 @@ mdx https://example.com/doc.md         <span style="color:var(--fg-muted)"># ren
     <li><strong>Search &amp; replace</strong> &mdash; find and replace text in the editor with regex support</li>
     <li><strong>Image upload</strong> &mdash; drag and drop or paste images into the editor</li>
     <li><strong>Print / PDF</strong> &mdash; native PDF export, plus browser print with clean CSS</li>
+    <li><strong>Reproducible PDFs</strong> &mdash; the same document always exports to the same bytes, with subset fonts keeping files small and <code>SOURCE_DATE_EPOCH</code> honoured</li>
+    <li><strong>Structured fetch</strong> &mdash; <code>mdx fetch --json</code> reports status, extraction method, token count and warnings alongside the markdown; <code>--max-tokens</code> trims to a context window</li>
     <li><strong>EPUB export</strong> &mdash; <code>mdx export --to epub</code> for Apple Books, Kobo, Calibre, and other e-readers</li>
     <li><strong>Full-text search</strong> &mdash; <code>mdx search</code> with BM25 ranking, tag filtering, and parallel file parsing</li>
     <li><strong>Dark/light theme</strong> &mdash; toggle with button or <kbd>t</kbd>, persisted across sessions</li>
@@ -511,11 +513,14 @@ mdx https://example.com/doc.md         <span style="color:var(--fg-muted)"># ren
 <div class="tool-card">
     <h3><code>mdx fetch</code> &mdash; Web page to markdown</h3>
     <p>Fetches a web page, extracts the main article content using Mozilla Readability, and outputs clean markdown. Supports the <a href="https://developers.cloudflare.com/fundamentals/reference/markdown-for-agents/">Markdown for Agents</a> protocol &mdash; MFA-enabled sites return pre-converted markdown directly. Great for LLM pipelines.</p>
+    <p><code>--json</code> emits a structured object instead: the requested and final URLs, HTTP status, how the content was extracted (<code>server-markdown</code>, <code>readability</code> or <code>raw</code>), token estimate, warnings, and the markdown itself &mdash; so a pipeline can tell a clean extraction from a fallback without parsing stderr. <code>--max-tokens</code> truncates to roughly a token budget, cutting at a block boundary and never inside a code fence.</p>
 <pre><span class="code-lang">bash</span><code>mdx fetch https://example.com              <span style="color:var(--fg-muted)"># extract article as markdown</span>
 mdx fetch --raw https://example.com        <span style="color:var(--fg-muted)"># full HTML to markdown (sanitizes scripts)</span>
 mdx fetch --metadata https://example.com   <span style="color:var(--fg-muted)"># include YAML front matter</span>
 mdx fetch --tokens https://example.com     <span style="color:var(--fg-muted)"># show estimated token count</span>
 mdx fetch -o article.md https://example.com  <span style="color:var(--fg-muted)"># save to file</span>
+mdx fetch --json https://example.com | jq -r .content   <span style="color:var(--fg-muted)"># structured output</span>
+mdx fetch --json --max-tokens 4000 URL     <span style="color:var(--fg-muted)"># fit a context window</span>
 mdx fetch https://example.com | llm        <span style="color:var(--fg-muted)"># pipe to LLM</span></code><button class="copy-btn" aria-label="Copy">Copy</button></pre>
 </div>
 
@@ -577,6 +582,7 @@ mdx search -l "query" .              <span style="color:var(--fg-muted)"># list 
 <div class="tool-card">
     <h3><code>mdx export</code> &mdash; Format conversion</h3>
     <p>Export markdown to a single-file HTML page, PDF, EPUB, JSON AST, or plain text. EPUB embeds local images, splits chapters on headings, and maps front matter to metadata. HTML is one file, but math and mermaid load KaTeX and mermaid.js from a CDN, so those two need a network connection to display. PDF renders mermaid with a local <code>mmdc</code>; without it the diagram is written in as a labelled source block and the export still succeeds &mdash; <code>--allow-remote-render</code> uploads the source to kroki.io instead, so it is off by default.</p>
+    <p>PDF output embeds only the glyphs a document actually uses, so files are small &mdash; this site&rsquo;s own README exports to about 200&nbsp;KB rather than 3&nbsp;MB. Output is also byte-reproducible: exporting the same document twice produces the same file, and <code>SOURCE_DATE_EPOCH</code> sets the embedded timestamp.</p>
 <pre><span class="code-lang">bash</span><code>mdx export --to html README.md   <span style="color:var(--fg-muted)"># single-file HTML page</span>
 mdx export --to pdf README.md    <span style="color:var(--fg-muted)"># PDF (native, no browser needed)</span>
 mdx export --to epub README.md   <span style="color:var(--fg-muted)"># EPUB e-book</span>
@@ -700,8 +706,9 @@ mdx serve file.md --unsafe-html  <span style="color:var(--fg-muted)"># render ra
         <tr><td><a href="https://github.com/BurntSushi/walkdir">walkdir</a></td><td>Recursive directory traversal</td></tr>
         <tr><td><a href="https://github.com/mgeisler/textwrap">textwrap</a></td><td>Text wrapping</td></tr>
         <tr><td><a href="https://github.com/image-rs/image">image</a></td><td>Image decoding (PNG, JPEG, GIF, WebP)</td></tr>
-        <tr><td><a href="https://github.com/theiskaa/genpdfi">genpdfi</a></td><td>PDF generation</td></tr>
-        <tr><td><a href="https://github.com/theiskaa/markdown2pdf">markdown2pdf</a></td><td>Markdown to PDF conversion</td></tr>
+        <tr><td><a href="https://github.com/theiskaa/genpdfi">genpdfi</a></td><td>PDF layout</td></tr>
+        <tr><td><a href="https://github.com/fschutt/printpdf">printpdf</a></td><td>PDF writing</td></tr>
+        <tr><td><a href="https://github.com/typst/subsetter">subsetter</a></td><td>Font subsetting for PDF</td></tr>
         <tr><td><a href="https://github.com/lise-henry/epub-builder">epub-builder</a></td><td>EPUB e-book generation</td></tr>
         <tr><td><a href="https://github.com/algesten/ureq">ureq</a></td><td>HTTP client (URL fetching)</td></tr>
         <tr><td><a href="https://github.com/niklak/dom_smoothie">dom_smoothie</a></td><td>Web article extraction (Readability)</td></tr>
