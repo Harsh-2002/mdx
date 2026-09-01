@@ -2066,3 +2066,64 @@ fn test_export_pdf_square_backgrounds_are_not_rasterized() {
     );
     assert!(bytes.windows(4).any(|w| w == b"%PDF"));
 }
+
+// ── diff ─────────────────────────────────────────────────────────────
+
+fn run_diff(a: &str, b: &str, extra: &[&str]) -> std::process::Output {
+    let fa = write_tmp("diff-a.md", a);
+    let fb = write_tmp("diff-b.md", b);
+    let out = Command::new(env!("CARGO_BIN_EXE_mdx"))
+        .arg("diff")
+        .args(extra)
+        .arg(&fa)
+        .arg(&fb)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("Failed to execute mdx");
+    let _ = std::fs::remove_file(&fa);
+    let _ = std::fs::remove_file(&fb);
+    out
+}
+
+/// Side-by-side truncation byte-sliced its input, so a wide character crossing
+/// the column boundary aborted the process -- and `panic = "abort"` makes that
+/// a SIGABRT with a core dump, not a clean error.
+#[test]
+fn test_diff_survives_wide_characters() {
+    for (a, b) in [
+        (
+            "# A\n\n\u{2705} \u{65e5}\u{672c}\u{8a9e} text\n",
+            "# B\n\n\u{2705} other \u{1f389}\n",
+        ),
+        (&"\u{2705}".repeat(200), "plain\n"),
+        (
+            "caf\u{e9} \u{3a9}\u{3bc}\u{3ad}\u{3b3}\u{3b1}\n",
+            "\u{41f}\u{440}\u{438}\u{432}\u{435}\u{442}\n",
+        ),
+    ] {
+        let out = run_diff(a, b, &[]);
+        assert!(
+            out.status.success(),
+            "diff aborted on wide characters: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn test_diff_handles_empty_and_identical_files() {
+    assert!(run_diff("", "# B\n", &[]).status.success());
+    assert!(run_diff("# Same\n", "# Same\n", &[]).status.success());
+    assert!(run_diff("", "", &[]).status.success());
+}
+
+#[test]
+fn test_diff_unified_mode_works() {
+    let out = run_diff(
+        "# A\n\n\u{2705} wide\n",
+        "# B\n\n\u{2705} wide\n",
+        &["--unified"],
+    );
+    assert!(out.status.success());
+    assert!(!String::from_utf8_lossy(&out.stdout).is_empty());
+}

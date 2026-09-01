@@ -1,5 +1,7 @@
 use similar::{ChangeTag, TextDiff};
 
+use crate::text::{Alignment, pad_to_width, truncate_to_width};
+
 pub struct DiffArgs {
     pub file_a: String,
     pub file_b: String,
@@ -63,9 +65,13 @@ fn print_side_by_side<'a>(diff: &TextDiff<'a, 'a, 'a, str>, name_a: &str, name_b
 
     // Header
     println!(
-        "\x1b[1m{:<col_width$}\x1b[0m | \x1b[1m{}\x1b[0m",
-        truncate(name_a, col_width),
-        truncate(name_b, col_width),
+        "\x1b[1m{}\x1b[0m | \x1b[1m{}\x1b[0m",
+        pad_to_width(
+            &truncate_to_width(name_a, col_width),
+            col_width,
+            Alignment::Left
+        ),
+        truncate_to_width(name_b, col_width),
     );
     println!("{}", "-".repeat(term_width.min(col_width * 2 + 3)));
 
@@ -75,34 +81,27 @@ fn print_side_by_side<'a>(diff: &TextDiff<'a, 'a, 'a, str>, name_a: &str, name_b
 
         match change.tag() {
             ChangeTag::Equal => {
-                let left = truncate(line, col_width);
-                let right = truncate(line, col_width);
+                let left = truncate_to_width(line, col_width);
                 println!(
-                    "\x1b[90m{:<col_width$}\x1b[0m | \x1b[90m{}\x1b[0m",
-                    left, right
+                    "\x1b[90m{}\x1b[0m | \x1b[90m{}\x1b[0m",
+                    pad_to_width(&left, col_width, Alignment::Left),
+                    left
                 );
             }
             ChangeTag::Delete => {
-                let left = truncate(line, col_width);
-                println!("\x1b[31m{:<col_width$}\x1b[0m | ", left);
+                let left = truncate_to_width(line, col_width);
+                println!(
+                    "\x1b[31m{}\x1b[0m | ",
+                    pad_to_width(&left, col_width, Alignment::Left)
+                );
             }
             ChangeTag::Insert => {
                 println!(
-                    "{:<col_width$} | \x1b[32m{}\x1b[0m",
-                    "",
-                    truncate(line, col_width)
+                    "{} | \x1b[32m{}\x1b[0m",
+                    " ".repeat(col_width),
+                    truncate_to_width(line, col_width)
                 );
             }
         }
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else if max > 3 {
-        format!("{}...", &s[..max - 3])
-    } else {
-        s[..max].to_string()
     }
 }
